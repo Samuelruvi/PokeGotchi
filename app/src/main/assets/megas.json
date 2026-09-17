@@ -1,0 +1,1453 @@
+{
+  "absol": [
+    {
+      "name": "absol-mega",
+      "label": "Mega Absol",
+      "types": [
+        "dark"
+      ]
+    },
+    {
+      "name": "absol-megaz",
+      "label": "Mega Absol Z",
+      "types": [
+        "dark",
+        "ghost"
+      ]
+    }
+  ],
+  "raichu": [
+    {
+      "name": "raichu-megax",
+      "label": "Mega Raichu X",
+      "types": [
+        "electric"
+      ]
+    },
+    {
+      "name": "raichu-megay",
+      "label": "Mega Raichu Y",
+      "types": [
+        "electric"
+      ]
+    }
+  ],
+  "meganium": [
+    {
+      "name": "meganium-mega",
+      "label": "Mega Meganium",
+      "types": [
+        "grass"
+      ]
+    }
+  ],
+  "emboar": [
+    {
+      "name": "emboar-mega",
+      "label": "Mega Emboar",
+      "types": [
+        "fire",
+        "fighting"
+      ]
+    }
+  ],
+  "feraligatr": [
+    {
+      "name": "feraligatr-mega",
+      "label": "Mega Feraligatr",
+      "types": [
+        "water"
+      ]
+    }
+  ],
+  "beedrill": [
+    {
+      "name": "beedrill-mega",
+      "label": "Mega Beedrill",
+      "types": [
+        "bug",
+        "poison"
+      ]
+    }
+  ],
+  "pidgeot": [
+    {
+      "name": "pidgeot-mega",
+      "label": "Mega Pidgeot",
+      "types": [
+        "normal",
+        "flying"
+      ]
+    }
+  ],
+  "ampharos": [
+    {
+      "name": "ampharos-mega",
+      "label": "Mega Ampharos",
+      "types": [
+        "electric",
+        "dragon"
+      ]
+    }
+  ],
+  "gyarados": [
+    {
+      "name": "gyarados-mega",
+      "label": "Mega Gyarados",
+      "types": [
+        "water",
+        "dark"
+      ]
+    }
+  ],
+  "barbaracle": [
+    {
+      "name": "barbaracle-mega",
+      "label": "Mega Barbaracle",
+      "types": [
+        "rock",
+        "water"
+      ]
+    }
+  ],
+  "starmie": [
+    {
+      "name": "starmie-mega",
+      "label": "Mega Starmie",
+      "types": [
+        "water",
+        "psychic"
+      ]
+    }
+  ],
+  "clefable": [
+    {
+      "name": "clefable-mega",
+      "label": "Mega Clefable",
+      "types": [
+        "fairy"
+      ]
+    }
+  ],
+  "scolipede": [
+    {
+      "name": "scolipede-mega",
+      "label": "Mega Scolipede",
+      "types": [
+        "poison",
+        "bug"
+      ]
+    }
+  ],
+  "victreebel": [
+    {
+      "name": "victreebel-mega",
+      "label": "Mega Victreebel",
+      "types": [
+        "poison",
+        "grass"
+      ]
+    }
+  ],
+  "medicham": [
+    {
+      "name": "medicham-mega",
+      "label": "Mega Medicham",
+      "types": [
+        "fighting",
+        "psychic"
+      ]
+    }
+  ],
+  "manectric": [
+    {
+      "name": "manectric-mega",
+      "label": "Mega Manectric",
+      "types": [
+        "electric"
+      ]
+    }
+  ],
+  "gardevoir": [
+    {
+      "name": "gardevoir-mega",
+      "label": "Mega Gardevoir",
+      "types": [
+        "psychic",
+        "fairy"
+      ]
+    }
+  ],
+  "gallade": [
+    {
+      "name": "gallade-mega",
+      "label": "Mega Gallade",
+      "types": [
+        "psychic",
+        "fighting"
+      ]
+    }
+  ],
+  "houndoom": [
+    {
+      "name": "houndoom-mega",
+      "label": "Mega Houndoom",
+      "types": [
+        "dark",
+        "fire"
+      ]
+    }
+  ],
+  "altaria": [
+    {
+      "name": "altaria-mega",
+      "label": "Mega Altaria",
+      "types": [
+        "dragon",
+        "fairy"
+      ]
+    }
+  ],
+  "audino": [
+    {
+      "name": "audino-mega",
+      "label": "Mega Audino",
+      "types": [
+        "normal",
+        "fairy"
+      ]
+    }
+  ],
+  "lopunny": [
+    {
+      "name": "lopunny-mega",
+      "label": "Mega Lopunny",
+      "types": [
+        "normal",
+        "fighting"
+      ]
+    }
+  ],
+  "banette": [
+    {
+      "name": "banette-mega",
+      "label": "Mega Banette",
+      "types": [
+        "ghost"
+      ]
+    }
+  ],
+  "camerupt": [
+    {
+      "name": "camerupt-mega",
+      "label": "Mega Camerupt",
+      "types": [
+        "fire",
+        "ground"
+      ]
+    }
+  ],
+  "excadrill": [
+    {
+      "name": "excadrill-mega",
+      "label": "Mega Excadrill",
+      "types": [
+        "ground",
+        "steel"
+      ]
+    }
+  ],
+  "sableye": [
+    {
+      "name": "sableye-mega",
+      "label": "Mega Sableye",
+      "types": [
+        "dark",
+        "ghost"
+      ]
+    }
+  ],
+  "mawile": [
+    {
+      "name": "mawile-mega",
+      "label": "Mega Mawile",
+      "types": [
+        "steel",
+        "fairy"
+      ]
+    }
+  ],
+  "sharpedo": [
+    {
+      "name": "sharpedo-mega",
+      "label": "Mega Sharpedo",
+      "types": [
+        "water",
+        "dark"
+      ]
+    }
+  ],
+  "eelektross": [
+    {
+      "name": "eelektross-mega",
+      "label": "Mega Eelektross",
+      "types": [
+        "electric"
+      ]
+    }
+  ],
+  "dragonite": [
+    {
+      "name": "dragonite-mega",
+      "label": "Mega Dragonite",
+      "types": [
+        "dragon",
+        "flying"
+      ]
+    }
+  ],
+  "malamar": [
+    {
+      "name": "malamar-mega",
+      "label": "Mega Malamar",
+      "types": [
+        "psychic",
+        "dark"
+      ]
+    }
+  ],
+  "dragalge": [
+    {
+      "name": "dragalge-mega",
+      "label": "Mega Dragalge",
+      "types": [
+        "poison",
+        "dragon"
+      ]
+    }
+  ],
+  "glalie": [
+    {
+      "name": "glalie-mega",
+      "label": "Mega Glalie",
+      "types": [
+        "ice"
+      ]
+    }
+  ],
+  "froslass": [
+    {
+      "name": "froslass-mega",
+      "label": "Mega Froslass",
+      "types": [
+        "ghost",
+        "ice"
+      ]
+    }
+  ],
+  "abomasnow": [
+    {
+      "name": "abomasnow-mega",
+      "label": "Mega Abomasnow",
+      "types": [
+        "grass",
+        "ice"
+      ]
+    }
+  ],
+  "scizor": [
+    {
+      "name": "scizor-mega",
+      "label": "Mega Scizor",
+      "types": [
+        "bug",
+        "steel"
+      ]
+    }
+  ],
+  "pinsir": [
+    {
+      "name": "pinsir-mega",
+      "label": "Mega Pinsir",
+      "types": [
+        "bug",
+        "flying"
+      ]
+    }
+  ],
+  "heracross": [
+    {
+      "name": "heracross-mega",
+      "label": "Mega Heracross",
+      "types": [
+        "bug",
+        "fighting"
+      ]
+    }
+  ],
+  "hawlucha": [
+    {
+      "name": "hawlucha-mega",
+      "label": "Mega Hawlucha",
+      "types": [
+        "fighting",
+        "flying"
+      ]
+    }
+  ],
+  "scrafty": [
+    {
+      "name": "scrafty-mega",
+      "label": "Mega Scrafty",
+      "types": [
+        "dark",
+        "fighting"
+      ]
+    }
+  ],
+  "chandelure": [
+    {
+      "name": "chandelure-mega",
+      "label": "Mega Chandelure",
+      "types": [
+        "ghost",
+        "fire"
+      ]
+    }
+  ],
+  "aerodactyl": [
+    {
+      "name": "aerodactyl-mega",
+      "label": "Mega Aerodactyl",
+      "types": [
+        "rock",
+        "flying"
+      ]
+    }
+  ],
+  "steelix": [
+    {
+      "name": "steelix-mega",
+      "label": "Mega Steelix",
+      "types": [
+        "steel",
+        "ground"
+      ]
+    }
+  ],
+  "aggron": [
+    {
+      "name": "aggron-mega",
+      "label": "Mega Aggron",
+      "types": [
+        "steel"
+      ]
+    }
+  ],
+  "tyranitar": [
+    {
+      "name": "tyranitar-mega",
+      "label": "Mega Tyranitar",
+      "types": [
+        "rock",
+        "dark"
+      ]
+    }
+  ],
+  "falinks": [
+    {
+      "name": "falinks-mega",
+      "label": "Mega Falinks",
+      "types": [
+        "fighting"
+      ]
+    }
+  ],
+  "chesnaught": [
+    {
+      "name": "chesnaught-mega",
+      "label": "Mega Chesnaught",
+      "types": [
+        "grass",
+        "fighting"
+      ]
+    }
+  ],
+  "skarmory": [
+    {
+      "name": "skarmory-mega",
+      "label": "Mega Skarmory",
+      "types": [
+        "steel",
+        "flying"
+      ]
+    }
+  ],
+  "delphox": [
+    {
+      "name": "delphox-mega",
+      "label": "Mega Delphox",
+      "types": [
+        "fire",
+        "psychic"
+      ]
+    }
+  ],
+  "salamence": [
+    {
+      "name": "salamence-mega",
+      "label": "Mega Salamence",
+      "types": [
+        "dragon",
+        "flying"
+      ]
+    }
+  ],
+  "kangaskhan": [
+    {
+      "name": "kangaskhan-mega",
+      "label": "Mega Kangaskhan",
+      "types": [
+        "normal"
+      ]
+    }
+  ],
+  "drampa": [
+    {
+      "name": "drampa-mega",
+      "label": "Mega Drampa",
+      "types": [
+        "normal",
+        "dragon"
+      ]
+    }
+  ],
+  "metagross": [
+    {
+      "name": "metagross-mega",
+      "label": "Mega Metagross",
+      "types": [
+        "steel",
+        "psychic"
+      ]
+    }
+  ],
+  "diancie": [
+    {
+      "name": "diancie-mega",
+      "label": "Mega Diancie",
+      "types": [
+        "rock",
+        "fairy"
+      ]
+    }
+  ],
+  "scovillain": [
+    {
+      "name": "scovillain-mega",
+      "label": "Mega Scovillain",
+      "types": [
+        "fire",
+        "grass"
+      ]
+    }
+  ],
+  "glimmora": [
+    {
+      "name": "glimmora-mega",
+      "label": "Mega Glimmora",
+      "types": [
+        "poison",
+        "rock"
+      ]
+    }
+  ],
+  "baxcalibur": [
+    {
+      "name": "baxcalibur-mega",
+      "label": "Mega Baxcalibur",
+      "types": [
+        "ice",
+        "dragon"
+      ]
+    }
+  ],
+  "sceptile": [
+    {
+      "name": "sceptile-mega",
+      "label": "Mega Sceptile",
+      "types": [
+        "grass",
+        "dragon"
+      ]
+    }
+  ],
+  "blaziken": [
+    {
+      "name": "blaziken-mega",
+      "label": "Mega Blaziken",
+      "types": [
+        "fire",
+        "fighting"
+      ]
+    }
+  ],
+  "swampert": [
+    {
+      "name": "swampert-mega",
+      "label": "Mega Swampert",
+      "types": [
+        "water",
+        "ground"
+      ]
+    }
+  ],
+  "chimecho": [
+    {
+      "name": "chimecho-mega",
+      "label": "Mega Chimecho",
+      "types": [
+        "psychic"
+      ]
+    }
+  ],
+  "golisopod": [
+    {
+      "name": "golisopod-mega",
+      "label": "Mega Golisopod",
+      "types": [
+        "bug",
+        "water"
+      ]
+    }
+  ],
+  "golurk": [
+    {
+      "name": "golurk-mega",
+      "label": "Mega Golurk",
+      "types": [
+        "ground",
+        "ghost"
+      ]
+    }
+  ],
+  "staraptor": [
+    {
+      "name": "staraptor-mega",
+      "label": "Mega Staraptor",
+      "types": [
+        "normal",
+        "flying"
+      ]
+    }
+  ],
+  "crabominable": [
+    {
+      "name": "crabominable-mega",
+      "label": "Mega Crabominable",
+      "types": [
+        "fighting",
+        "ice"
+      ]
+    }
+  ],
+  "heatran": [
+    {
+      "name": "heatran-mega",
+      "label": "Mega Heatran",
+      "types": [
+        "fire",
+        "steel"
+      ]
+    }
+  ],
+  "darkrai": [
+    {
+      "name": "darkrai-mega",
+      "label": "Mega Darkrai",
+      "types": [
+        "dark"
+      ]
+    }
+  ],
+  "latias": [
+    {
+      "name": "latias-mega",
+      "label": "Mega Latias",
+      "types": [
+        "dragon",
+        "psychic"
+      ]
+    }
+  ],
+  "latios": [
+    {
+      "name": "latios-mega",
+      "label": "Mega Latios",
+      "types": [
+        "dragon",
+        "psychic"
+      ]
+    }
+  ],
+  "rayquaza": [
+    {
+      "name": "rayquaza-mega",
+      "label": "Mega Rayquaza",
+      "types": [
+        "dragon",
+        "flying"
+      ]
+    }
+  ],
+  "zeraora": [
+    {
+      "name": "zeraora-mega",
+      "label": "Mega Zeraora",
+      "types": [
+        "electric"
+      ]
+    }
+  ],
+  "floette": [
+    {
+      "name": "floette-mega",
+      "label": "Mega Floette",
+      "types": [
+        "fairy"
+      ]
+    }
+  ],
+  "meowstic": [
+    {
+      "name": "meowstic-mega",
+      "label": "Mega Meowstic",
+      "types": [
+        "psychic"
+      ]
+    }
+  ],
+  "mewtwo": [
+    {
+      "name": "mewtwo-megax",
+      "label": "Mega Mewtwo X",
+      "types": [
+        "psychic",
+        "fighting"
+      ]
+    },
+    {
+      "name": "mewtwo-megay",
+      "label": "Mega Mewtwo Y",
+      "types": [
+        "psychic"
+      ]
+    }
+  ],
+  "venusaur": [
+    {
+      "name": "venusaur-mega",
+      "label": "Mega Venusaur",
+      "types": [
+        "grass",
+        "poison"
+      ]
+    },
+    {
+      "name": "venusaur-gmax",
+      "label": "Gigantamax Venusaur",
+      "types": [
+        "poison",
+        "grass"
+      ]
+    }
+  ],
+  "blastoise": [
+    {
+      "name": "blastoise-mega",
+      "label": "Mega Blastoise",
+      "types": [
+        "water"
+      ]
+    },
+    {
+      "name": "blastoise-gmax",
+      "label": "Gigantamax Blastoise",
+      "types": [
+        "water"
+      ]
+    }
+  ],
+  "gengar": [
+    {
+      "name": "gengar-mega",
+      "label": "Mega Gengar",
+      "types": [
+        "ghost",
+        "poison"
+      ]
+    },
+    {
+      "name": "gengar-gmax",
+      "label": "Gigantamax Gengar",
+      "types": [
+        "poison",
+        "ghost"
+      ]
+    }
+  ],
+  "slowbro": [
+    {
+      "name": "slowbro-mega",
+      "label": "Mega Slowbro",
+      "types": [
+        "water",
+        "psychic"
+      ]
+    }
+  ],
+  "greninja": [
+    {
+      "name": "greninja-mega",
+      "label": "Mega Greninja",
+      "types": [
+        "water",
+        "dark"
+      ]
+    }
+  ],
+  "garchomp": [
+    {
+      "name": "garchomp-mega",
+      "label": "Mega Garchomp",
+      "types": [
+        "dragon",
+        "ground"
+      ]
+    },
+    {
+      "name": "garchomp-megaz",
+      "label": "Mega Garchomp Z",
+      "types": [
+        "dragon",
+        "ground"
+      ]
+    }
+  ],
+  "lucario": [
+    {
+      "name": "lucario-mega",
+      "label": "Mega Lucario",
+      "types": [
+        "fighting",
+        "steel"
+      ]
+    },
+    {
+      "name": "lucario-megaz",
+      "label": "Mega Lucario Z",
+      "types": [
+        "fighting",
+        "steel"
+      ]
+    }
+  ],
+  "magearna": [
+    {
+      "name": "magearna-mega",
+      "label": "Mega Magearna",
+      "types": [
+        "steel",
+        "fairy"
+      ]
+    },
+    {
+      "name": "magearna-mega-original",
+      "label": "Mega Magearna (Color Original)",
+      "types": [
+        "steel",
+        "fairy"
+      ]
+    }
+  ],
+  "charizard": [
+    {
+      "name": "charizard-megax",
+      "label": "Mega Charizard X",
+      "types": [
+        "fire",
+        "dragon"
+      ]
+    },
+    {
+      "name": "charizard-megay",
+      "label": "Mega Charizard Y",
+      "types": [
+        "fire",
+        "flying"
+      ]
+    },
+    {
+      "name": "charizard-gmax",
+      "label": "Gigantamax Charizard",
+      "types": [
+        "fire",
+        "flying"
+      ]
+    }
+  ],
+  "zygarde": [
+    {
+      "name": "zygarde-mega",
+      "label": "Mega Zygarde",
+      "types": [
+        "dragon",
+        "ground"
+      ]
+    }
+  ],
+  "tatsugiri-curly": [
+    {
+      "name": "tatsugiri-mega-curly",
+      "label": "Mega Tatsugiri (Curly)",
+      "types": [
+        "dragon",
+        "water"
+      ]
+    }
+  ],
+  "tatsugiri-droopy": [
+    {
+      "name": "tatsugiri-mega-droopy",
+      "label": "Mega Tatsugiri (Droopy)",
+      "types": [
+        "dragon",
+        "water"
+      ]
+    }
+  ],
+  "tatsugiri-stretchy": [
+    {
+      "name": "tatsugiri-mega-stretchy",
+      "label": "Mega Tatsugiri (Stretchy)",
+      "types": [
+        "dragon",
+        "water"
+      ]
+    }
+  ],
+  "necrozma": [
+    {
+      "name": "necrozma-duskmane",
+      "label": "Necrozma Crepúsculo",
+      "types": [
+        "psychic",
+        "steel"
+      ]
+    },
+    {
+      "name": "necrozma-dawnwings",
+      "label": "Necrozma Alba Nocturna",
+      "types": [
+        "psychic",
+        "ghost"
+      ]
+    },
+    {
+      "name": "necrozma-ultra",
+      "label": "Necrozma Ultra",
+      "types": [
+        "psychic",
+        "dragon"
+      ]
+    }
+  ],
+  "kyogre": [
+    {
+      "name": "kyogre-primal",
+      "label": "Kyogre Primigenio",
+      "types": [
+        "water"
+      ]
+    }
+  ],
+  "groudon": [
+    {
+      "name": "groudon-primal",
+      "label": "Groudon Primigenio",
+      "types": [
+        "ground",
+        "fire"
+      ]
+    }
+  ],
+  "dialga": [
+    {
+      "name": "dialga-origin",
+      "label": "Dialga Origen",
+      "types": [
+        "steel",
+        "dragon"
+      ]
+    }
+  ],
+  "palkia": [
+    {
+      "name": "palkia-origin",
+      "label": "Palkia Origen",
+      "types": [
+        "water",
+        "dragon"
+      ]
+    }
+  ],
+  "giratina": [
+    {
+      "name": "giratina-origin",
+      "label": "Giratina Origen",
+      "types": [
+        "ghost",
+        "dragon"
+      ]
+    }
+  ],
+  "zacian": [
+    {
+      "name": "zacian-crowned",
+      "label": "Zacian Corona de Espada",
+      "types": [
+        "fairy",
+        "steel"
+      ]
+    }
+  ],
+  "zamazenta": [
+    {
+      "name": "zamazenta-crowned",
+      "label": "Zamazenta Corona de Escudo",
+      "types": [
+        "fighting",
+        "steel"
+      ]
+    }
+  ],
+  "hoopa": [
+    {
+      "name": "hoopa-unbound",
+      "label": "Hoopa Desatado",
+      "types": [
+        "psychic",
+        "dark"
+      ]
+    }
+  ],
+  "tornadus": [
+    {
+      "name": "tornadus-therian",
+      "label": "Tornadus Forma Therian",
+      "types": [
+        "flying"
+      ]
+    }
+  ],
+  "landorus": [
+    {
+      "name": "landorus-therian",
+      "label": "Landorus Forma Therian",
+      "types": [
+        "ground",
+        "flying"
+      ]
+    }
+  ],
+  "thundurus": [
+    {
+      "name": "thundurus-therian",
+      "label": "Thundurus Forma Therian",
+      "types": [
+        "electric",
+        "flying"
+      ]
+    }
+  ],
+  "enamorus": [
+    {
+      "name": "enamorus-therian",
+      "label": "Enamorus Forma Therian",
+      "types": [
+        "fairy",
+        "flying"
+      ]
+    }
+  ],
+  "pyroar": [
+    {
+      "name": "pyroar-mega",
+      "label": "Mega Pyroar",
+      "types": [
+        "fire",
+        "normal"
+      ]
+    }
+  ],
+  "shaymin": [
+    {
+      "name": "shaymin-sky",
+      "label": "Shaymin Forma Cielo",
+      "types": [
+        "grass",
+        "flying"
+      ]
+    }
+  ],
+  "terapagos": [
+    {
+      "name": "terapagos-stellar",
+      "label": "Terapagos Estelar",
+      "types": [
+        "normal"
+      ]
+    }
+  ],
+  "kyurem": [
+    {
+      "name": "kyurem-white",
+      "label": "Kyurem Blanco",
+      "types": [
+        "ice",
+        "dragon"
+      ]
+    },
+    {
+      "name": "kyurem-black",
+      "label": "Kyurem Negro",
+      "types": [
+        "ice",
+        "dragon"
+      ]
+    }
+  ],
+  "calyrex": [
+    {
+      "name": "calyrex-ice",
+      "label": "Calyrex Jinete de Hielo",
+      "types": [
+        "psychic",
+        "ice"
+      ]
+    },
+    {
+      "name": "calyrex-shadow",
+      "label": "Calyrex Jinete Sombrío",
+      "types": [
+        "psychic",
+        "ghost"
+      ]
+    }
+  ],
+  "alakazam": [
+    {
+      "name": "alakazam-mega",
+      "label": "Mega Alakazam",
+      "types": [
+        "psychic"
+      ]
+    }
+  ],
+  "appletun": [
+    {
+      "name": "appletun-gmax",
+      "label": "Gigantamax Appletun",
+      "types": [
+        "grass",
+        "dragon"
+      ]
+    }
+  ],
+  "butterfree": [
+    {
+      "name": "butterfree-gmax",
+      "label": "Gigantamax Butterfree",
+      "types": [
+        "flying",
+        "bug"
+      ]
+    }
+  ],
+  "centiskorch": [
+    {
+      "name": "centiskorch-gmax",
+      "label": "Gigantamax Centiskorch",
+      "types": [
+        "bug",
+        "fire"
+      ]
+    }
+  ],
+  "cinderace": [
+    {
+      "name": "cinderace-gmax",
+      "label": "Gigantamax Cinderace",
+      "types": [
+        "fire"
+      ]
+    }
+  ],
+  "coalossal": [
+    {
+      "name": "coalossal-gmax",
+      "label": "Gigantamax Coalossal",
+      "types": [
+        "rock",
+        "fire"
+      ]
+    }
+  ],
+  "copperajah": [
+    {
+      "name": "copperajah-gmax",
+      "label": "Gigantamax Copperajah",
+      "types": [
+        "steel"
+      ]
+    }
+  ],
+  "corviknight": [
+    {
+      "name": "corviknight-gmax",
+      "label": "Gigantamax Corviknight",
+      "types": [
+        "flying",
+        "steel"
+      ]
+    }
+  ],
+  "drednaw": [
+    {
+      "name": "drednaw-gmax",
+      "label": "Gigantamax Drednaw",
+      "types": [
+        "rock",
+        "water"
+      ]
+    }
+  ],
+  "duraludon": [
+    {
+      "name": "duraludon-gmax",
+      "label": "Gigantamax Duraludon",
+      "types": [
+        "steel",
+        "dragon"
+      ]
+    }
+  ],
+  "eternatus": [
+    {
+      "name": "eternatus-gmax",
+      "label": "Eternatus Dinamax Infinito",
+      "types": [
+        "poison",
+        "dragon"
+      ]
+    }
+  ],
+  "flapple": [
+    {
+      "name": "flapple-gmax",
+      "label": "Gigantamax Flapple",
+      "types": [
+        "grass",
+        "dragon"
+      ]
+    }
+  ],
+  "garbodor": [
+    {
+      "name": "garbodor-gmax",
+      "label": "Gigantamax Garbodor",
+      "types": [
+        "poison"
+      ]
+    }
+  ],
+  "grimmsnarl": [
+    {
+      "name": "grimmsnarl-gmax",
+      "label": "Gigantamax Grimmsnarl",
+      "types": [
+        "dark",
+        "fairy"
+      ]
+    }
+  ],
+  "hatterene": [
+    {
+      "name": "hatterene-gmax",
+      "label": "Gigantamax Hatterene",
+      "types": [
+        "psychic",
+        "fairy"
+      ]
+    }
+  ],
+  "inteleon": [
+    {
+      "name": "inteleon-gmax",
+      "label": "Gigantamax Inteleon",
+      "types": [
+        "water"
+      ]
+    }
+  ],
+  "kingler": [
+    {
+      "name": "kingler-gmax",
+      "label": "Gigantamax Kingler",
+      "types": [
+        "water"
+      ]
+    }
+  ],
+  "lapras": [
+    {
+      "name": "lapras-gmax",
+      "label": "Gigantamax Lapras",
+      "types": [
+        "water",
+        "ice"
+      ]
+    }
+  ],
+  "machamp": [
+    {
+      "name": "machamp-gmax",
+      "label": "Gigantamax Machamp",
+      "types": [
+        "fighting"
+      ]
+    }
+  ],
+  "melmetal": [
+    {
+      "name": "melmetal-gmax",
+      "label": "Gigantamax Melmetal",
+      "types": [
+        "steel"
+      ]
+    }
+  ],
+  "meowth": [
+    {
+      "name": "meowth-gmax",
+      "label": "Gigantamax Meowth",
+      "types": [
+        "normal"
+      ]
+    }
+  ],
+  "orbeetle": [
+    {
+      "name": "orbeetle-gmax",
+      "label": "Gigantamax Orbeetle",
+      "types": [
+        "bug",
+        "psychic"
+      ]
+    }
+  ],
+  "rillaboom": [
+    {
+      "name": "rillaboom-gmax",
+      "label": "Gigantamax Rillaboom",
+      "types": [
+        "grass"
+      ]
+    }
+  ],
+  "sandaconda": [
+    {
+      "name": "sandaconda-gmax",
+      "label": "Gigantamax Sandaconda",
+      "types": [
+        "ground"
+      ]
+    }
+  ],
+  "snorlax": [
+    {
+      "name": "snorlax-gmax",
+      "label": "Gigantamax Snorlax",
+      "types": [
+        "normal"
+      ]
+    }
+  ],
+  "urshifu": [
+    {
+      "name": "urshifu-gmax",
+      "label": "Gigantamax Urshifu (Estilo Brusco)",
+      "types": [
+        "fighting",
+        "dark"
+      ]
+    }
+  ],
+  "urshifu-rapid": [
+    {
+      "name": "urshifu-rapid-gmax",
+      "label": "Gigantamax Urshifu (Estilo Fluido)",
+      "types": [
+        "fighting",
+        "water"
+      ]
+    }
+  ],
+  "pikachu": [
+    {
+      "name": "pikachu-gmax",
+      "label": "Gigantamax Pikachu",
+      "types": [
+        "electric"
+      ]
+    }
+  ],
+  "eevee": [
+    {
+      "name": "eevee-gmax",
+      "label": "Gigantamax Eevee",
+      "types": [
+        "normal"
+      ]
+    }
+  ],
+  "toxtricity": [
+    {
+      "name": "toxtricity-gmax",
+      "label": "Gigantamax Toxtricity",
+      "types": [
+        "electric",
+        "poison"
+      ]
+    }
+  ],
+  "toxtricity-lowkey": [
+    {
+      "name": "toxtricity-gmax",
+      "label": "Gigantamax Toxtricity",
+      "types": [
+        "electric",
+        "poison"
+      ]
+    }
+  ],
+  "alcremie": [
+    {
+      "name": "alcremie-gmax",
+      "label": "Gigantamax Alcremie",
+      "types": [
+        "fairy"
+      ]
+    }
+  ]
+}

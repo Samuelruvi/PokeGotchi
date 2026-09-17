@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/item_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="4dp"
+    android:background="?android:attr/selectableItemBackground">
+
+    <FrameLayout
+        android:layout_width="72dp"
+        android:layout_height="60dp">
+        <ImageView
+            android:id="@+id/thumb"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:contentDescription="@null" />
+        <!-- Estrellita: esta especie fue shiny alguna vez (aunque ya haya evolucionado a otra
+             cosa - el flag se copia a cada fase, ver PetState.evolveTo), no solo el activo. -->
+        <TextView
+            android:id="@+id/shiny_star"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:text="⭐"
+            android:textSize="13sp"
+            android:visibility="gone" />
+        <!-- Huevo: este Pokemon en concreto (PetState.eggParent) tiene un huevo activo ahora
+             mismo - unico indicador visible de "quien" tiene el huevo, ya que la notificacion
+             solo abre la app sin decir nada mas (pedido explicito del usuario). Sprite real del
+             huevo (EffectGenerator.eggBitmap, el mismo que usa el widget) en vez de un emoji
+             generico - pedido explicito del usuario ("mejor"). -->
+        <ImageView
+            android:id="@+id/egg_badge"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_gravity="top|start"
+            android:scaleType="fitCenter"
+            android:contentDescription="@null"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textSize="11sp" />
+
+    <TextView
+        android:id="@+id/lvl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:textColor="#2E86E0" />
+</LinearLayout>

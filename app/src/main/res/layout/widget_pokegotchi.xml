@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widget PokeGotchi. RemoteViews: solo Frame/Linear/Relative + vistas basicas.
+     Zona del Pokemon = FrameLayout con el sprite (idle) y 3 ViewFlipper de efectos
+     superpuestos (ocultos hasta que se toca su boton). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_bg"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:src="@drawable/bg_meadow"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:id="@+id/content_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <!-- Nivel + barra de experiencia (azul) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:id="@+id/widget_level"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Nv. 1"
+                android:textStyle="bold"
+                android:textSize="14sp"
+                android:textColor="#FFFFFF"
+                android:shadowColor="#000000"
+                android:shadowDx="1" android:shadowDy="1" android:shadowRadius="3" />
+            <ProgressBar
+                android:id="@+id/xp_bar"
+                style="@android:style/Widget.ProgressBar.Horizontal"
+                android:layout_width="0dp"
+                android:layout_height="7dp"
+                android:layout_weight="1"
+                android:layout_marginStart="6dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#2E86E0" />
+            <!-- Boton pequeño para abrir la app directamente (pedido explicito del usuario) -
+                 antes solo se podia abrir tocando el texto de nivel, sin ningun icono dedicado. -->
+            <ImageView
+                android:id="@+id/btn_open_app"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginStart="6dp"
+                android:src="@drawable/ic_pokeball"
+                android:contentDescription="@null" />
+        </LinearLayout>
+
+        <!-- Zona Pokemon: sprite + efectos superpuestos (tocar = grito) -->
+        <FrameLayout
+            android:id="@+id/pokemon_area"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+            <ViewFlipper
+                android:id="@+id/widget_pokemon"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:autoStart="true"
+                android:flipInterval="180"
+                android:measureAllChildren="true" />
+            <ImageView
+                android:id="@+id/fx_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:visibility="gone"
+                android:contentDescription="@null" />
+
+            <!-- Nube de "necesidad": pixel-art, tamaño fijo, generada en EffectGenerator.
+                 El Pokemon avisa de lo que le hace falta encima de su cabeza. Posicion real
+                 (margenes) fijada por codigo segun el hueco que deje el sprite - ver
+                 PokeWidgetProvider.applyAdaptiveEggAndCloudLayout; esto son solo valores de
+                 partida razonables por si esa funcion no llega a aplicarse (Android <12).
+                 Oculta por defecto; visible solo cuando hay algo que mostrar. -->
+            <ImageView
+                android:id="@+id/need_cloud"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_marginTop="2dp"
+                android:visibility="gone"
+                android:scaleType="fitCenter"
+                android:contentDescription="@null" />
+
+            <!-- Huevo: aparece JUNTO al Pokemon (no lo sustituye). Tamaño/posicion real fijados
+                 por codigo a juego con el hueco real que deje el sprite (ver
+                 PokeWidgetProvider.applyAdaptiveEggAndCloudLayout) - esto son valores de partida
+                 razonables por si esa funcion no llega a aplicarse (Android <12). -->
+            <ImageView
+                android:id="@+id/egg_overlay"
+                android:layout_width="140dp"
+                android:layout_height="140dp"
+                android:scaleType="fitCenter"
+                android:layout_gravity="top|start"
+                android:layout_marginTop="2dp"
+                android:layout_marginStart="2dp"
+                android:visibility="gone"
+                android:contentDescription="@null" />
+
+            <!-- Palpito CONTINUO de la ultima fase: igual que widget_pokemon, un ViewFlipper con
+                 autoStart avanza solo (en el proceso del launcher, sin depender de que la app
+                 siga viva ni de ningun hilo de fondo sostenido) - evita el bug de congelacion que
+                 ya se dio al intentar sostener esto con un Thread/goAsync largo (ver
+                 PokeWidgetProvider.playEggPulse). Mismo hueco que egg_overlay; solo uno de los
+                 dos esta visible a la vez. -->
+            <ViewFlipper
+                android:id="@+id/egg_flipper"
+                android:layout_width="140dp"
+                android:layout_height="140dp"
+                android:layout_gravity="top|start"
+                android:layout_marginTop="2dp"
+                android:layout_marginStart="2dp"
+                android:autoStart="true"
+                android:flipInterval="130"
+                android:visibility="gone"
+                android:measureAllChildren="true" />
+        </FrameLayout>
+
+        <!-- Estadisticas: 2 variantes intercambiables (ver PokeWidgetProvider.applyChromeSize) -
+             apiladas (una fila por barra) en widgets estrechos (3 columnas), en UNA sola fila
+             (las 3 barras en linea) en anchos (4 columnas, donde sobra ancho para eso y asi se
+             gana alto para el Pokemon) - pedido explicito del usuario. Solo una de las dos esta
+             visible a la vez; la otra se deja en GONE. -->
+        <LinearLayout android:id="@+id/stats_stacked" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+            <LinearLayout android:id="@+id/row_health" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                <TextView android:id="@+id/icon_health" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#10084;" android:textSize="12sp" android:paddingEnd="4dp" />
+                <ProgressBar android:id="@+id/stat_health" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="match_parent" android:layout_height="8dp" android:max="100" android:progress="80" android:progressTint="#E23B3B" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/row_hygiene" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="2dp">
+                <TextView android:id="@+id/icon_hygiene" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#128167;" android:textSize="12sp" android:paddingEnd="4dp" />
+                <ProgressBar android:id="@+id/stat_hygiene" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="match_parent" android:layout_height="8dp" android:max="100" android:progress="50" android:progressTint="#3B9BE2" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/row_happiness" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="2dp">
+                <TextView android:id="@+id/icon_happiness" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#128522;" android:textSize="12sp" android:paddingEnd="4dp" />
+                <ProgressBar android:id="@+id/stat_happiness" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="match_parent" android:layout_height="8dp" android:max="100" android:progress="65" android:progressTint="#F2B705" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/stats_row" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone">
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginEnd="4dp">
+                <TextView android:id="@+id/icon_health_row" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#10084;" android:textSize="12sp" android:paddingEnd="2dp" />
+                <ProgressBar android:id="@+id/stat_health_row" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="8dp" android:max="100" android:progress="80" android:progressTint="#E23B3B" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginEnd="4dp">
+                <TextView android:id="@+id/icon_happiness_row" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#128522;" android:textSize="12sp" android:paddingEnd="2dp" />
+                <ProgressBar android:id="@+id/stat_happiness_row" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="8dp" android:max="100" android:progress="65" android:progressTint="#F2B705" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                <TextView android:id="@+id/icon_hygiene_row" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="&#128167;" android:textSize="12sp" android:paddingEnd="2dp" />
+                <ProgressBar android:id="@+id/stat_hygiene_row" style="@android:style/Widget.ProgressBar.Horizontal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="8dp" android:max="100" android:progress="50" android:progressTint="#3B9BE2" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Botones -->
+        <LinearLayout android:id="@+id/button_row" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="6dp">
+            <Button android:id="@+id/btn_feed" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="&#127822;" android:textSize="16sp" android:background="@drawable/btn_action_bg" />
+            <Button android:id="@+id/btn_pet" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="&#9995;" android:textSize="16sp" android:background="@drawable/btn_action_bg" />
+            <Button android:id="@+id/btn_wash" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="&#128703;" android:textSize="16sp" android:background="@drawable/btn_action_bg" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
