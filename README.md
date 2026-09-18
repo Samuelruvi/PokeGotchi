@@ -9,6 +9,8 @@ Proyecto personal de fan, sin ánimo de lucro. Los sprites y sonidos de los Pok�
 pertenecen a Nintendo / Game Freak / The Pokémon Company; este repositorio no tiene
 afiliación con ellos y no se distribuye con fines comerciales.
 
+<img src="docs/widget-screenshot.png" alt="Widget de PokeGotchi en la pantalla de inicio" width="360">
+
 ## Características
 
 - Cuidado en tiempo real: hambre, higiene y felicidad decaen con el tiempo; se recuperan
