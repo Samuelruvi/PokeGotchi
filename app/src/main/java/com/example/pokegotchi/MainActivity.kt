@@ -2327,16 +2327,22 @@ class MainActivity : AppCompatActivity() {
             // activables o no) hace falta para el mensaje de "que falta" y para poder resolver
             // el nombre si hay una activa ahora mismo.
             val allMegaOptions = PetState.megaOptionsFor(this, mon.name)
-            megaOptions = PetState.megaOptionsAvailable(this, mon.name)
             val fusionSpecies = setOf("necrozma", "kyurem", "calyrex")
-            // Gigantamax reutiliza EXACTAMENTE el mismo mecanismo que Megaevolucion (mismo
-            // gate de nivel/cooldown/duracion, mismo sistema de opciones - ver megas.json,
-            // simplemente con opciones cuyo name acaba en "-gmax") - pedido explicito del
-            // usuario ("meter los gigantamax como si fuera una megaevolucion en cuanto a
-            // mecanica"). Solo cambia el TEXTO (Megaevolucionar/Gigantamaxizar) cuando TODAS
-            // las opciones de esa especie son Gigantamax (Blastoise/Venusaur/Gengar tienen
-            // Mega Y Gigantamax a la vez, asi que ahi se deja el texto generico de Mega).
-            val allGmax = allMegaOptions.isNotEmpty() && allMegaOptions.all { it.name.endsWith("-gmax") }
+            val level = stats?.let { PetState.levelOf(this, it.xp, mon.name) } ?: 0
+            // Gigantamax reutiliza el mismo mecanismo que Megaevolucion (mismo sistema de
+            // opciones - ver megas.json, opciones cuyo name acaba en "-gmax"), pero con su
+            // PROPIO nivel/duracion/enfriamiento, mas bajo y corto que Megaevolucion "de
+            // verdad" (ver PetState.unlockLevelForMegaOption) - pedido explicito del usuario
+            // tras jugar un tiempo con un unico nivel para todo. megaOptions se queda solo con
+            // las que YA se pueden activar con el nivel actual (megaOptionsEligible), asi una
+            // especie con Mega Y Gigantamax a la vez (Blastoise/Venusaur/Gengar/Charizard)
+            // puede tener disponible solo una de las dos.
+            megaOptions = PetState.megaOptionsEligible(this, mon.name, level)
+            // Solo cambia el TEXTO (Megaevolucionar/Gigantamaxizar) cuando TODAS las opciones
+            // YA DISPONIBLES son Gigantamax - si una especie mixta solo tiene Gigantamax
+            // elegible todavia (nivel < MEGA_UNLOCK_LEVEL), el boton ya dice "Gigantamaxizar",
+            // no el generico de Mega.
+            val allGmax = megaOptions.isNotEmpty() && megaOptions.all { it.name.endsWith("-gmax") }
             // Necrozma/Kyurem/Calyrex no "megaevolucionan" de verdad (no hay Mega Piedra ni
             // vuelven a la normalidad solos) - se FUSIONAN de forma permanente con otra especie
             // distinta (Solgaleo/Lunala, Reshiram/Zekrom, Glastrier/Spectrier). Mismo motivo que
@@ -2345,7 +2351,6 @@ class MainActivity : AppCompatActivity() {
             val megaVerb = if (allGmax) "Gigantamaxizar" else if (mon.name in fusionSpecies) "Fusionar" else "Megaevolucionar"
             val megaNoun = if (allGmax) "Gigantamax" else if (mon.name in fusionSpecies) "Fusión" else "Megaevolución"
             if (allMegaOptions.isNotEmpty() && stats != null) {
-                val level = PetState.levelOf(this, stats.xp, mon.name)
                 val activeMega = PetState.activeMegaSpriteName(this, mon.name)
                 when {
                     activeMega != null -> {
@@ -2384,9 +2389,15 @@ class MainActivity : AppCompatActivity() {
                             setPadding(0, dp(10), 0, 0)
                         })
                     }
-                    mon.name !in fusionSpecies && mon.name != "terapagos" && level < PetState.MEGA_UNLOCK_LEVEL -> {
+                    mon.name !in fusionSpecies && mon.name != "terapagos" && megaOptions.isEmpty() -> {
+                        // La opcion que antes se desbloquea (menor unlockLevelForMegaOption) decide
+                        // el numero Y el nombre del aviso - para una especie mixta (Mega Y
+                        // Gigantamax, ej. Charizard) esto es Gigantamax primero, Mega despues.
+                        val next = allMegaOptions.minByOrNull { PetState.unlockLevelForMegaOption(it.name) }
+                        val nextLevel = next?.let { PetState.unlockLevelForMegaOption(it.name) } ?: PetState.MEGA_UNLOCK_LEVEL
+                        val nextNoun = if (next?.name?.endsWith("-gmax") == true) "Gigantamax" else megaNoun
                         root.addView(TextView(this).apply {
-                            text = "🔺 $megaNoun disponible a partir de nivel ${PetState.MEGA_UNLOCK_LEVEL}"
+                            text = "🔺 $nextNoun disponible a partir de nivel $nextLevel"
                             setTextColor(Color.parseColor("#888888"))
                             setPadding(0, dp(10), 0, 0)
                         })

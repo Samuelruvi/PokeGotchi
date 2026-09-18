@@ -1641,12 +1641,32 @@ object PetState {
     // mismo peso, asi que una regla que encareciera la segunda seria inventada sin ninguna base.
     data class MegaOption(val name: String, val label: String, val types: List<String>)
 
-    const val MEGA_UNLOCK_LEVEL = 40
+    // Gigantamax se desbloquea antes pero dura menos (pensado como el efecto rapido de un
+    // turno que es en los juegos reales); Megaevolucion "de verdad" (y el resto de formas que
+    // en la UI se enseñan bajo ese mismo nombre - Primigenia/Origen/Corona/Formas Trio, ver
+    // unlockLevelForMegaOption) se desbloquea mas tarde pero dura mas, igual que hasta ahora.
+    // Pedido explicito del usuario tras probar el juego un tiempo con un solo nivel para todo.
+    const val MEGA_UNLOCK_LEVEL = 50
+    const val GIGANTAMAX_UNLOCK_LEVEL = 40
     private const val MEGA_DURATION_MS = 8 * 60 * 60 * 1000L   // 8 horas activo
     private const val MEGA_COOLDOWN_MS = 12 * 60 * 60 * 1000L  // 12 horas hasta poder repetir
+    private const val GMAX_DURATION_MS = 4 * 60 * 60 * 1000L   // 4 horas activo
+    private const val GMAX_COOLDOWN_MS = 8 * 60 * 60 * 1000L   // 8 horas hasta poder repetir
     private const val KEY_MEGA_ACTIVE_NAME = "mega_active_name"
     private const val KEY_MEGA_ACTIVE_UNTIL = "mega_active_until"
     private const val KEY_MEGA_LAST_USED_AT = "mega_last_used_at"
+
+    /** Nivel a partir del cual se puede activar la opcion [optionName]: GIGANTAMAX_UNLOCK_LEVEL
+     *  para las que acaban en "-gmax", MEGA_UNLOCK_LEVEL para el resto (incluye Megaevolucion
+     *  de verdad y las demas formas que la UI enseña bajo ese mismo nombre). */
+    fun unlockLevelForMegaOption(optionName: String): Int =
+        if (optionName.endsWith("-gmax")) GIGANTAMAX_UNLOCK_LEVEL else MEGA_UNLOCK_LEVEL
+
+    private fun durationMsForMegaOption(optionName: String): Long =
+        if (optionName.endsWith("-gmax")) GMAX_DURATION_MS else MEGA_DURATION_MS
+
+    private fun cooldownMsForMegaOption(optionName: String): Long =
+        if (optionName.endsWith("-gmax")) GMAX_COOLDOWN_MS else MEGA_COOLDOWN_MS
 
     @Volatile private var megaTable: Map<String, List<MegaOption>>? = null
 
@@ -1756,12 +1776,17 @@ object PetState {
         return (until - System.currentTimeMillis()).coerceAtLeast(0L)
     }
 
-    /** Milisegundos que quedan de espera hasta poder volver a Megaevolucionar (0 si ya se puede;
-     *  cuenta desde la ULTIMA vez que se activo, no desde que termino, ver MEGA_COOLDOWN_MS). */
+    /** Milisegundos que quedan de espera hasta poder volver a Megaevolucionar/Gigantamaxizar (0
+     *  si ya se puede; cuenta desde la ULTIMA vez que se activo, no desde que termino). El
+     *  enfriamiento depende de CUAL opcion fue esa ultima vez (KEY_MEGA_ACTIVE_NAME - Gigantamax
+     *  se refresca antes que Megaevolucion, ver cooldownMsForMegaOption). */
     fun megaCooldownRemainingMs(context: Context, name: String): Long {
-        val lastUsed = prefs(context).getLong(k(name.lowercase(), KEY_MEGA_LAST_USED_AT), 0L)
+        val n = name.lowercase()
+        val p = prefs(context)
+        val lastUsed = p.getLong(k(n, KEY_MEGA_LAST_USED_AT), 0L)
         if (lastUsed == 0L) return 0L
-        val readyAt = lastUsed + MEGA_COOLDOWN_MS
+        val lastOption = p.getString(k(n, KEY_MEGA_ACTIVE_NAME), null) ?: return 0L
+        val readyAt = lastUsed + cooldownMsForMegaOption(lastOption)
         return (readyAt - System.currentTimeMillis()).coerceAtLeast(0L)
     }
 
@@ -1808,32 +1833,39 @@ object PetState {
         }
     }
 
-    /** ¿Puede [name] (con este [level]) Megaevolucionar AHORA MISMO? Necesita tener alguna
-     *  opcion DISPONIBLE (ver megaOptionsAvailable - para Necrozma/Kyurem/Calyrex, cumplir el
-     *  requisito de fusion cuenta como "nivel"; para Terapagos, terapagosIsTerastal; para el
-     *  resto, MEGA_UNLOCK_LEVEL), no estar ya Megaevolucionado, y no seguir en el enfriamiento de
-     *  24h desde la ultima vez. */
-    fun canMegaEvolve(context: Context, name: String, level: Int): Boolean {
+    /** De megaOptionsAvailable, las que YA se pueden activar con este [level] - para Necrozma/
+     *  Kyurem/Calyrex el nivel no cuenta (su gate real es tener conseguida la otra especie, ya
+     *  aplicado en megaOptionsAvailable); para Terapagos, vacia hasta terapagosIsTerastal; para
+     *  el resto, filtra cada opcion por su propio unlockLevelForMegaOption (asi una especie con
+     *  Mega Y Gigantamax a la vez, ej. Charizard, puede tener una disponible y la otra no). */
+    fun megaOptionsEligible(context: Context, name: String, level: Int): List<MegaOption> {
         val n = name.lowercase()
-        val gateOk = when (n) {
-            "necrozma", "kyurem", "calyrex" -> megaOptionsAvailable(context, n).isNotEmpty()
-            "terapagos" -> terapagosIsTerastal(context)
-            else -> level >= MEGA_UNLOCK_LEVEL
+        val avail = megaOptionsAvailable(context, n)
+        return when (n) {
+            "necrozma", "kyurem", "calyrex" -> avail
+            "terapagos" -> if (terapagosIsTerastal(context)) avail else emptyList()
+            else -> avail.filter { level >= unlockLevelForMegaOption(it.name) }
         }
-        return megaOptionsAvailable(context, name).isNotEmpty() &&
-            gateOk &&
+    }
+
+    /** ¿Puede [name] (con este [level]) Megaevolucionar/Gigantamaxizar AHORA MISMO? Necesita
+     *  tener alguna opcion ELEGIBLE (ver megaOptionsEligible), no estar ya transformado, y no
+     *  seguir en el enfriamiento desde la ultima vez. */
+    fun canMegaEvolve(context: Context, name: String, level: Int): Boolean {
+        return megaOptionsEligible(context, name, level).isNotEmpty() &&
             activeMegaSpriteName(context, name) == null &&
             megaCooldownRemainingMs(context, name) == 0L
     }
 
-    /** Activa la Megaevolucion [optionName] (uno de los .name de megaOptionsFor) para [name]
-     *  durante MEGA_DURATION_MS, y arranca el enfriamiento de MEGA_COOLDOWN_MS desde ahora. */
+    /** Activa la Megaevolucion/Gigantamax [optionName] (uno de los .name de megaOptionsFor) para
+     *  [name] durante su duracion (durationMsForMegaOption - menos si es Gigantamax), y arranca
+     *  su propio enfriamiento (cooldownMsForMegaOption) desde ahora. */
     fun activateMega(context: Context, name: String, optionName: String) {
         val n = name.lowercase()
         val now = System.currentTimeMillis()
         prefs(context).edit()
             .putString(k(n, KEY_MEGA_ACTIVE_NAME), optionName)
-            .putLong(k(n, KEY_MEGA_ACTIVE_UNTIL), now + MEGA_DURATION_MS)
+            .putLong(k(n, KEY_MEGA_ACTIVE_UNTIL), now + durationMsForMegaOption(optionName))
             .putLong(k(n, KEY_MEGA_LAST_USED_AT), now)
             .commit()
         // Registro de "ya visto" (ver mechanicShowcase): para Necrozma/Kyurem/Calyrex, sus
@@ -3084,11 +3116,23 @@ object PetState {
         // esta especie son Gigantamax (name acabado en "-gmax"); las pocas que mezclan
         // Mega y Gigantamax a la vez (Blastoise/Venusaur/Gengar) se quedan con el texto
         // generico de Mega.
-        val allGmax = megaOpts.all { it.name.endsWith("-gmax") }
+        val hasGmax = megaOpts.any { it.name.endsWith("-gmax") }
+        val hasMega = megaOpts.any { !it.name.endsWith("-gmax") }
+        val allGmax = hasGmax && !hasMega
         val noun = if (allGmax) "Gigantamax" else "Megaevolución"
+        // Blastoise/Venusaur/Gengar/Charizard mezclan Mega Y Gigantamax a la vez, cada uno con
+        // su propio nivel/duracion/enfriamiento (ver unlockLevelForMegaOption) - se describen
+        // los dos por separado en vez de un solo numero que solo valdria para una de las dos.
+        val gmaxDesc = "Gigantamax: ${GMAX_DURATION_MS / 3_600_000L}h activo, ${GMAX_COOLDOWN_MS / 3_600_000L}h de enfriamiento (nivel $GIGANTAMAX_UNLOCK_LEVEL)."
+        val megaDesc = "Megaevolución: ${MEGA_DURATION_MS / 3_600_000L}h activo, ${MEGA_COOLDOWN_MS / 3_600_000L}h de enfriamiento (nivel $MEGA_UNLOCK_LEVEL)."
+        val desc = when {
+            hasGmax && hasMega -> "$gmaxDesc $megaDesc En gris hasta activarla alguna vez."
+            hasGmax -> "$gmaxDesc En gris hasta activarla alguna vez."
+            else -> "$megaDesc En gris hasta activarla alguna vez."
+        }
         return MechanicShowcase(
             "$noun de ${cap(n)}",
-            "Se activa temporalmente (${MEGA_DURATION_MS / 3_600_000L}h, ${MEGA_COOLDOWN_MS / 3_600_000L}h de enfriamiento). En gris hasta activarla alguna vez.",
+            desc,
             listOf(MechanicForm(n, "Forma base", ownedSpecies)) +
                 megaOpts.map { opt -> MechanicForm(opt.name, opt.label, opt.name in seen) }
         )
