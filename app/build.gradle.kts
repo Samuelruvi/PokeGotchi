@@ -12,7 +12,13 @@ android {
         applicationId = "com.example.pokegotchi"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
+        // Sube SIEMPRE versionCode en cada release nueva que se publique (aunque el nombre del
+        // release en GitHub se quede generico) - es lo unico que Android mira para decidir si
+        // una instalacion es "actualizar" (reemplaza, conserva el save) o "ya la tienes" (la
+        // rechaza) al descargar el APK de nuevo. Se quedo fijo en 1 durante toda una sesion
+        // entera de cambios por descuido - bug real detectado antes de que llegara a afectar a
+        // nadie que ya lo tuviera instalado.
+        versionCode = 2
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
