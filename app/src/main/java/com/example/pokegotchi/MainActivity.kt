@@ -497,6 +497,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** "Xd Yh"/"Xh Ym"/"Xm" para PetState.careHours - mismo estilo que formatCountdown. */
+    private fun formatCareHours(hours: Float): String {
+        val totalMin = (hours * 60).toLong().coerceAtLeast(0L)
+        val days = totalMin / (24 * 60)
+        val hrs = (totalMin / 60) % 24
+        val mins = totalMin % 60
+        return when {
+            days > 0 -> "${days}d ${hrs}h"
+            hrs > 0 -> "${hrs}h ${mins}m"
+            else -> "${mins}m"
+        }
+    }
+
     /** Miniatura estatica de [name]: primero el paquete LOCAL (assets/localsprites), sin red -
      *  solo si esa especie no esta ahi (hoy en dia, solo urshifu-rapid normal) se llama a
      *  [onNetworkFallback] para cargarla de Showdown como hasta ahora. [isStillValid] protege las
@@ -1333,28 +1346,19 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(16), dp(20), dp(8))
         }
 
-        // --- Ventana de noche (adaptativa: empieza en 22:00-08:00 y se recalibra con el uso
-        //     real, ver PetState.recordInteraction) - pedido explicito del usuario para poder
-        //     comprobar si el aprendizaje esta funcionando bien. ---
+        // --- Fondo (rejilla de 3 columnas) ---
         root.addView(TextView(this).apply {
-            text = "Ventana de noche actual"; textSize = 16f
+            text = "Fondo"; textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, dp(4))
+            setPadding(0, 0, 0, dp(8))
         })
-        root.addView(TextView(this).apply {
-            text = PetState.sleepWindowLabel(this@MainActivity)
-            textSize = 15f
-            setPadding(0, 0, 0, dp(4))
-        })
-        root.addView(TextView(this).apply {
-            text = "Empieza en 22:00–08:00 y se ajusta sola según cuándo usas de verdad el widget/la app (nunca notifica de más durante esta franja)."
-            textSize = 11.5f
-            setTextColor(Color.parseColor("#888888"))
-            setPadding(0, 0, 0, dp(6))
-        })
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(grid)
+        buildBgGrid(grid)
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(14)) })
 
-        // --- Nitidez del sprite (prueba: vecino cercano vs Scale2x, ver conversacion) ---
+        // --- Nitidez del sprite (prueba: vecino cercano vs Scale2x, ver conversacion) - al
+        //     fondo, pedido explicito del usuario, justo encima del Debug. ---
         root.addView(TextView(this).apply {
             text = "Nitidez del sprite (prueba)"; textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -1383,17 +1387,23 @@ class MainActivity : AppCompatActivity() {
         }
         radioButtons.forEach { scaleGroup.addView(it) }
         root.addView(scaleGroup)
-        root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(14)) })
+        root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(24)) })
 
-        // --- Fondo (rejilla de 3 columnas) ---
-        root.addView(TextView(this).apply {
-            text = "Fondo"; textSize = 16f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, dp(8))
+        // --- Ver log: fuera del menu debug (pedido explicito del usuario) - no hace falta
+        //     contraseña para esto, es solo diagnostico de lectura, no edita nada del juego. ---
+        root.addView(Button(this).apply {
+            text = "📋 Ver log"; isAllCaps = false
+            setOnClickListener { showDebugLogDialog() }
         })
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(grid)
-        buildBgGrid(grid)
+        root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(8)) })
+
+        // --- Debug (con contraseña, al fondo del todo - pedido explicito del usuario: boton
+        //     igual que el resto del juego (no un texto discreto), herramientas de prueba que
+        //     el propio usuario pueda abrir sin tener que pedirmelo a mi cada vez). ---
+        root.addView(Button(this).apply {
+            text = "🔧 Debug"; isAllCaps = false
+            setOnClickListener { promptDebugPassword() }
+        })
 
         val scroll = ScrollView(this).apply { addView(root) }
         androidx.appcompat.app.AlertDialog.Builder(this)
@@ -1401,6 +1411,727 @@ class MainActivity : AppCompatActivity() {
             .setView(scroll)
             .setPositiveButton("Cerrar", null)
             .show()
+    }
+
+    // ==================== MENU DEBUG (protegido por contraseña) ====================
+    // Consolida aqui TODO lo que antes solo se podia hacer via adb (log persistente, forzar
+    // fase del huevo, saltar horas, editar/anadir/borrar Pokemon a mano) - pedido explicito del
+    // usuario para no depender de mi para probar cosas. La contrasena es una comprobacion local
+    // simple (no hay nada que proteger de verdad, es un telefono personal) - solo evita que
+    // alguien que coja el telefono y toque "Ajustes" se tropiece con esto sin querer.
+    private val DEBUG_PASSWORD = "27021996"
+
+    private fun promptDebugPassword() {
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = "Contraseña"
+        }
+        val d = resources.displayMetrics.density
+        val pad = (16 * d).toInt()
+        val frame = FrameLayout(this).apply { setPadding(pad, pad, pad, 0) }
+        frame.addView(input)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Debug")
+            .setView(frame)
+            .setPositiveButton("Entrar") { _, _ ->
+                if (input.text.toString() == DEBUG_PASSWORD) showDebugMenu()
+                else Toast.makeText(this, "Contraseña incorrecta", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showDebugMenu() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(8))
+        }
+        val items = listOf(
+            "🌙 Ventana de noche" to { showDebugSleepWindowDialog() },
+            "⏱️ Simular paso del tiempo" to { showDebugTimeSkipDialog() },
+            "🥚 Forzar fase del huevo" to { showDebugEggStageDialog() },
+            "✏️ Editar / añadir Pokémon" to { showDebugPokemonEditorDialog() }
+        )
+        items.forEach { (label, action) ->
+            root.addView(Button(this).apply {
+                text = label; isAllCaps = false
+                setOnClickListener { action() }
+            })
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Menú debug")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
+    private fun showDebugSleepWindowDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        root.addView(TextView(this).apply {
+            text = PetState.sleepWindowLabel(this@MainActivity)
+            textSize = 15f
+            setPadding(0, 0, 0, dp(4))
+        })
+        root.addView(TextView(this).apply {
+            text = "Empieza en 22:00–08:00 y se ajusta sola según cuándo usas de verdad el widget/la app (nunca notifica de más durante esta franja)."
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#888888"))
+        })
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Ventana de noche actual")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
+    private fun showDebugLogDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val logText = try {
+            val lines = DebugLog.file(this).readLines()
+            lines.takeLast(300).joinToString("\n")
+        } catch (e: Exception) { "(sin log todavía)" }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(Button(this).apply {
+            text = "📤 Compartir (log completo)"; isAllCaps = false
+            setOnClickListener {
+                // A diferencia del texto de arriba (solo las ultimas 300 lineas, para poder
+                // leerlo aqui sin que el dialogo se vuelva enorme), compartir manda el ARCHIVO
+                // entero como adjunto - pedido explicito del usuario: "que este todo el log en
+                // un documento", no solo un trozo pegado como texto. Hace falta un content://
+                // Uri via FileProvider (ver AndroidManifest.xml/res/xml/file_paths.xml) - un
+                // file:// directo ya no se puede compartir entre apps desde hace varias
+                // versiones de Android.
+                try {
+                    val file = DebugLog.file(this@MainActivity)
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        this@MainActivity, "$packageName.fileprovider", file
+                    )
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "PokeGotchi - log completo")
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(send, "Compartir log"))
+                } catch (e: Exception) {
+                    dbg("compartir log fallo: $e")
+                    Toast.makeText(this@MainActivity, "No se pudo compartir: $e", Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+        val scroll = ScrollView(this)
+        scroll.addView(TextView(this).apply {
+            text = logText
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        })
+        root.addView(scroll)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Log (últimas 300 líneas)")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .setNeutralButton("Borrar log") { _, _ ->
+                try { DebugLog.file(this).delete() } catch (e: Exception) {}
+                Toast.makeText(this, "Log borrado", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun showDebugTimeSkipDialog() {
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "Horas a avanzar"
+        }
+        val d = resources.displayMetrics.density
+        val pad = (16 * d).toInt()
+        val frame = FrameLayout(this).apply { setPadding(pad, pad, pad, 0) }
+        frame.addView(input)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Simular paso del tiempo")
+            .setMessage("Adelanta el reloj del Pokémon activo (y el del huevo si hay uno incubando) sin esperar de verdad.")
+            .setView(frame)
+            .setPositiveButton("Aplicar") { _, _ ->
+                val hours = input.text.toString().toFloatOrNull()
+                if (hours == null || hours <= 0f) {
+                    Toast.makeText(this, "Pon un número de horas mayor que 0", Toast.LENGTH_SHORT).show()
+                } else {
+                    dbg("debug: saltando $hours horas")
+                    PetState.debugSkipHours(this, hours)
+                    WidgetRefresh.updateWidgets(this)
+                    Toast.makeText(this, "$hours horas simuladas", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showDebugEggStageDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        root.addView(TextView(this).apply {
+            text = if (PetState.eggStageOverrideActive(this@MainActivity))
+                "Forzada ahora mismo. Fases: 0 a ${PetState.EGG_CRACK_STAGES - 1}."
+            else "Sin forzar (usando la fase real). Fases: 0 a ${PetState.EGG_CRACK_STAGES - 1}."
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#888888"))
+            setPadding(0, 0, 0, dp(8))
+        })
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "Fase (0-${PetState.EGG_CRACK_STAGES - 1})"
+        }
+        root.addView(input)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Forzar fase del huevo")
+            .setView(root)
+            .setPositiveButton("Aplicar") { _, _ ->
+                val stage = input.text.toString().toIntOrNull()
+                if (stage == null || stage !in 0 until PetState.EGG_CRACK_STAGES) {
+                    Toast.makeText(this, "Fase entre 0 y ${PetState.EGG_CRACK_STAGES - 1}", Toast.LENGTH_SHORT).show()
+                } else {
+                    PetState.debugSetEggStage(this, stage)
+                    WidgetRefresh.updateWidgets(this)
+                    Toast.makeText(this, "Fase $stage forzada", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("Quitar override") { _, _ ->
+                PetState.debugClearEggStageOverride(this)
+                WidgetRefresh.updateWidgets(this)
+                Toast.makeText(this, "Override quitado", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showDebugPokemonEditorDialog() {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(Button(this).apply {
+            text = "📋 Ver mis Pokémon"; isAllCaps = false
+            setOnClickListener { showDebugOwnedGridDialog() }
+        })
+        root.addView(Button(this).apply {
+            text = "➕ Añadir Pokémon"; isAllCaps = false
+            setOnClickListener { showDebugAddGridDialog() }
+        })
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Editar / añadir Pokémon")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
+    /** Rellena una celda de rejilla (mismo layout item_pokemon.xml de la Pokedex real) para
+     *  [mon]/[shiny] - version simplificada de lo que hace DexAdapter (sin tinte de
+     *  evolucionado/fusion ni huevo, no hace falta en el menu debug). */
+    private fun bindDebugPokemonCell(holder: MonVH, mon: Mon, shiny: Boolean) {
+        val owned = PetState.hasIndividual(this, mon.name, shiny)
+        holder.name.text = "#${mon.id} ${PetState.displayLabel(mon.name)}"
+        holder.name.setTextColor(Color.parseColor("#EEEEEE"))
+        holder.shinyStar.visibility = if (shiny) View.VISIBLE else View.GONE
+        holder.eggBadge.visibility = View.GONE
+        holder.thumb.setImageDrawable(null)
+        holder.thumb.clearColorFilter()
+        val expected = mon.name + if (shiny) "#s" else ""
+        holder.thumb.tag = expected
+        val spriteName = if (owned) PetState.displaySpriteName(this, mon.name, shiny) else mon.name
+        loadLocalOrNetworkThumb(holder.thumb, spriteName, shiny, isStillValid = { holder.thumb.tag == expected }) {
+            val req = ImageRequest.Builder(this)
+                .data("https://play.pokemonshowdown.com/sprites/gen5/${SpriteRepository.toShowdownSlug(spriteName)}.png")
+                .target(
+                    onSuccess = { d -> if (holder.thumb.tag == expected) holder.thumb.setImageDrawable(d) },
+                    onError = { if (holder.thumb.tag == expected) holder.thumb.setImageResource(android.R.drawable.ic_menu_help) }
+                )
+                .build()
+            holder.thumb.context.imageLoader.enqueue(req)
+        }
+        holder.lvl.text = if (owned) PetState.levelForPokemon(this, mon.name, shiny)?.let { "Nv. $it" } ?: "" else "—"
+    }
+
+    /** Rejilla de TODA especie desbloqueada (PetState.isUnlocked - el mismo criterio que la
+     *  Pokedex real "Mis Pokemon", NO solo las que ya tienen individuo con stats: una especie
+     *  reclamada de una oferta periodica cuenta como "tuya" en la Pokedex desde el momento en
+     *  que se reclama, pero no tiene stats propios hasta la primera vez que se cuida de verdad -
+     *  bug real reportado por el usuario, la rejilla solo miraba hasIndividual y se dejaba esas
+     *  fuera). Normal y shiny cuentan como dos celdas independientes si ambos tienen individuo;
+     *  una especie reclamada-pero-nunca-criada aparece como una sola celda sin nivel ("—") -
+     *  tocarla la selecciona por primera vez (le crea sus stats) igual que en la Pokedex real. */
+    private fun showDebugOwnedGridDialog() {
+        data class Entry(val mon: Mon, val shiny: Boolean, val hasData: Boolean)
+        val entries = allMons.filter { PetState.isUnlocked(this, it.name) }.flatMap { mon ->
+            val hasNormal = PetState.hasIndividual(this, mon.name, false)
+            val hasShiny = PetState.hasIndividual(this, mon.name, true)
+            when {
+                hasNormal && hasShiny -> listOf(Entry(mon, false, true), Entry(mon, true, true))
+                hasShiny -> listOf(Entry(mon, true, true))
+                hasNormal -> listOf(Entry(mon, false, true))
+                else -> listOf(Entry(mon, false, false))
+            }
+        }.sortedBy { PetState.displayLabel(it.mon.name) + if (it.shiny) "1" else "0" }
+
+        val rv = RecyclerView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutManager = GridLayoutManager(this@MainActivity, 3)
+        }
+        lateinit var dlg: androidx.appcompat.app.AlertDialog
+        rv.adapter = object : RecyclerView.Adapter<MonVH>() {
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MonVH =
+                MonVH(LayoutInflater.from(parent.context).inflate(R.layout.item_pokemon, parent, false))
+            override fun getItemCount() = entries.size
+            override fun onBindViewHolder(holder: MonVH, position: Int) {
+                val entry = entries[position]
+                bindDebugPokemonCell(holder, entry.mon, entry.shiny)
+                holder.root.setOnClickListener {
+                    dlg.dismiss()
+                    if (entry.hasData) {
+                        showDebugIndividualDialog(entry.mon.name, entry.shiny)
+                    } else {
+                        dbg("debug: creando individuo ${entry.mon.name} (shiny=${entry.shiny}) sin activarlo, reclamado por oferta")
+                        PetState.rollFreshIndividual(this@MainActivity, entry.mon.name, entry.shiny, entry.mon.id)
+                        showLevel()   // el nivel de entrenador cuenta capturas - ver PetState.trainerXpPool
+                        showDebugIndividualDialog(entry.mon.name, entry.shiny)
+                    }
+                }
+            }
+        }
+        dlg = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Mis Pokémon (${entries.size})")
+            .setView(rv)
+            .setPositiveButton("Cerrar", null)
+            .create()
+        dlg.show()
+    }
+
+    /** Rejilla de TODA la Pokedex (con buscador) para añadir cualquiera - tocar uno lo selecciona
+     *  (normal, no shiny) y abre su editor completo (showDebugIndividualDialog), donde shiny es
+     *  un parametro mas a cambiar si hace falta - pedido explicito del usuario: no un paso previo
+     *  aparte antes de añadir. */
+    private fun showDebugAddGridDialog() {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val searchInput = EditText(this).apply { hint = "Buscar Pokémon..." }
+        root.addView(searchInput)
+
+        // TODA la Pokedex, la tengas ya o no (pedido explicito del usuario: no quitar de aqui
+        // los que ya tienes) - el dialogo de confirmacion decide "Agregar" o "Editar" segun si
+        // esa variante concreta (shiny o no) ya existe.
+        val sortedMons = allMons.sortedBy { PetState.displayLabel(it.name) }
+        var filtered = sortedMons
+        val rv = RecyclerView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutManager = GridLayoutManager(this@MainActivity, 3)
+        }
+        lateinit var dlg: androidx.appcompat.app.AlertDialog
+        val gridAdapter = object : RecyclerView.Adapter<MonVH>() {
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MonVH =
+                MonVH(LayoutInflater.from(parent.context).inflate(R.layout.item_pokemon, parent, false))
+            override fun getItemCount() = filtered.size
+            override fun onBindViewHolder(holder: MonVH, position: Int) {
+                val mon = filtered[position]
+                bindDebugPokemonCell(holder, mon, false)
+                // NO se añade al tocar - pedido explicito del usuario: primero una confirmacion
+                // propia (showDebugAddConfirmDialog), con su boton "Agregar".
+                holder.root.setOnClickListener { showDebugAddConfirmDialog(mon, dlg) }
+            }
+        }
+        rv.adapter = gridAdapter
+        root.addView(rv)
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val q = s?.toString()?.trim()?.lowercase() ?: ""
+                filtered = if (q.isEmpty()) sortedMons
+                    else sortedMons.filter { PetState.displayLabel(it.name).lowercase().contains(q) || it.id.toString() == q }
+                gridAdapter.notifyDataSetChanged()
+            }
+        })
+        dlg = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Añadir Pokémon")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .create()
+        dlg.show()
+    }
+
+    /** Elegir shiny o no ANTES de decidir que hacer con [mon] (pedido explicito del usuario:
+     *  seleccionar NO añade al instante) - el boton cambia solo entre "✏️ Editar" (esa variante
+     *  YA existe: abre su editor tal cual, sin tocarla) y "➕ Agregar" (no existe: la crea, activa
+     *  en el widget, y abre su editor) segun lo que marque la casilla Shiny en cada momento.
+     *  Cancelar no toca nada y vuelve a la rejilla de detras. */
+    private fun showDebugAddConfirmDialog(mon: Mon, gridDlg: androidx.appcompat.app.AlertDialog) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(20), dp(16), dp(20), dp(4))
+        }
+        val thumb = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(96), dp(80)) }
+        root.addView(thumb)
+        root.addView(TextView(this).apply {
+            text = "#${mon.id} ${PetState.displayLabel(mon.name)}"
+            textSize = 16f; setTypeface(typeface, Typeface.BOLD); gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, dp(8))
+        })
+        val shinyCheck = android.widget.CheckBox(this).apply { text = "Shiny" }
+        root.addView(shinyCheck)
+        val actionBtn = Button(this).apply { isAllCaps = false }
+        root.addView(actionBtn)
+
+        fun refreshPreview() {
+            val shiny = shinyCheck.isChecked
+            val expected = mon.name + if (shiny) "#s" else ""
+            thumb.tag = expected
+            loadLocalOrNetworkThumb(thumb, mon.name, shiny, isStillValid = { thumb.tag == expected }) {}
+            actionBtn.text = if (PetState.hasIndividual(this, mon.name, shiny)) "✏️ Editar" else "➕ Agregar"
+        }
+        refreshPreview()
+        shinyCheck.setOnCheckedChangeListener { _, _ -> refreshPreview() }
+
+        val dlg = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(root)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        actionBtn.setOnClickListener {
+            val shiny = shinyCheck.isChecked
+            dlg.dismiss()
+            if (PetState.hasIndividual(this, mon.name, shiny)) {
+                gridDlg.dismiss()
+                showDebugIndividualDialog(mon.name, shiny)
+                return@setOnClickListener
+            }
+            dbg("debug: añadiendo ${mon.name} (shiny=$shiny)")
+            selectPokemon(mon, shiny)
+            gridDlg.dismiss()
+            // selectPokemon asegura el sprite en un hilo de fondo antes de guardar nada - un
+            // pequeño margen para que ya este todo escrito cuando se abra el editor.
+            android.os.Handler(mainLooper).postDelayed({ showDebugIndividualDialog(mon.name, shiny) }, 700)
+        }
+        dlg.show()
+    }
+
+    /** Editor de UN individuo concreto ([startName]/[shiny], no hace falta que sea el activo):
+     *  nivel, stats, evolucion forzada, Mega/Gigantamax forzado, hacerlo activo, eliminarlo. */
+    private fun showDebugIndividualDialog(startName: String, startShiny: Boolean) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(8))
+        }
+        val thumb = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(72), dp(60))
+        }
+        root.addView(thumb)
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(body)
+        var currentName = startName.lowercase()
+        var shiny = startShiny
+        lateinit var dlg: androidx.appcompat.app.AlertDialog
+
+        fun statRow(label: String, value: Int, applyFn: (Float) -> Unit, refresh: () -> Unit): LinearLayout {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(4)) }
+            row.addView(TextView(this).apply {
+                text = label; textSize = 13f
+                layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT)
+            })
+            val input = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(value.toString())
+                layoutParams = LinearLayout.LayoutParams(dp(70), LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            row.addView(input)
+            row.addView(Button(this).apply {
+                text = "Aplicar"; isAllCaps = false; textSize = 11f
+                setOnClickListener {
+                    val v = input.text.toString().toFloatOrNull()
+                    if (v == null || v < 0f || v > 100f) Toast.makeText(this@MainActivity, "0-100", Toast.LENGTH_SHORT).show()
+                    else { applyFn(v); WidgetRefresh.updateWidgets(this@MainActivity); refresh() }
+                }
+            })
+            return row
+        }
+
+        fun refresh() {
+            body.removeAllViews()
+            val name = currentName
+            val isActive = PetState.currentPokemon(this) == name && PetState.isActiveShiny(this) == shiny
+            val stats = if (isActive) PetState.loadWithDecay(this) else (PetState.rawStats(this, name, shiny) ?: PetState.Stats(75f, 75f, 75f, 0f))
+            val level = PetState.levelOf(this, stats.xp, name)
+
+            val expected = name + if (shiny) "#s" else ""
+            thumb.tag = expected
+            loadLocalOrNetworkThumb(thumb, PetState.displaySpriteName(this, name, shiny), shiny, isStillValid = { thumb.tag == expected }) {}
+
+            body.addView(TextView(this).apply {
+                text = "${PetState.displayLabel(name)}${if (shiny) " ✨" else ""} · Nv. $level"
+                textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+                setPadding(0, dp(8), 0, dp(2))
+            })
+            body.addView(TextView(this).apply {
+                text = if (isActive) "🟢 Activo ahora mismo" else "Congelado (no es el activo ahora)"
+                textSize = 11.5f; setTextColor(Color.parseColor("#888888"))
+                setPadding(0, 0, 0, dp(8))
+            })
+
+            val levelInput = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(level.toString())
+                hint = "Nivel (1-100)"
+            }
+            body.addView(levelInput)
+            body.addView(Button(this).apply {
+                text = "Aplicar nivel"; isAllCaps = false
+                setOnClickListener {
+                    val lvl = levelInput.text.toString().toIntOrNull()
+                    if (lvl == null || lvl !in 1..100) {
+                        Toast.makeText(this@MainActivity, "Nivel entre 1 y 100", Toast.LENGTH_SHORT).show()
+                    } else {
+                        PetState.debugSetIndividualStats(this@MainActivity, name, shiny, xp = PetState.xpForLevel(this@MainActivity, lvl, name))
+                        if (isActive) WidgetRefresh.updateWidgets(this@MainActivity)
+                        showLevel()   // el nivel de entrenador suma el nivel de cada Pokemon - ver PetState.trainerXpPool
+                        refresh()
+                    }
+                }
+            })
+            body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(8)) })
+
+            body.addView(statRow("Salud", stats.health.toInt(),
+                { PetState.debugSetIndividualStats(this, name, shiny, health = it) }, ::refresh))
+            body.addView(statRow("Higiene", stats.hygiene.toInt(),
+                { PetState.debugSetIndividualStats(this, name, shiny, hygiene = it) }, ::refresh))
+            body.addView(statRow("Felicidad", stats.happiness.toInt(),
+                { PetState.debugSetIndividualStats(this, name, shiny, happiness = it) }, ::refresh))
+            body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+
+            // Variantes de esta especie: normal y shiny son individuos INDEPENDIENTES (ver
+            // PetState.slot) - puede tener solo normal, solo shiny, o los dos a la vez (pedido
+            // explicito del usuario). Cada casilla crea o quita ESA variante en concreto; el
+            // nivel/stats/evolucion/mega de mas abajo son siempre los de la que se esta viendo
+            // ahora mismo (marcada al crear una nueva, o a la que quede si se quita la actual).
+            body.addView(TextView(this).apply {
+                text = "Variantes que existen"; textSize = 13f; setPadding(0, 0, 0, dp(2))
+            })
+            val hasNormalNow = PetState.hasIndividual(this, name, false)
+            val hasShinyNow = PetState.hasIndividual(this, name, true)
+            lateinit var normalCheck: android.widget.CheckBox
+            lateinit var shinyIndivCheck: android.widget.CheckBox
+            fun onVariantToggle(wantShiny: Boolean) {
+                val checkbox = if (wantShiny) shinyIndivCheck else normalCheck
+                val nowHas = PetState.hasIndividual(this, name, wantShiny)
+                if (checkbox.isChecked && !nowHas) {
+                    val mon = allMons.find { it.name == name } ?: return
+                    dbg("debug: creando variante shiny=$wantShiny de $name")
+                    PetState.rollFreshIndividual(this, name, wantShiny, mon.id)
+                    shiny = wantShiny
+                    adapter.notifyDataSetChanged()
+                    showLevel()   // el nivel de entrenador cuenta capturas - ver PetState.trainerXpPool
+                    refresh()
+                } else if (!checkbox.isChecked && nowHas) {
+                    dbg("debug: quitando variante shiny=$wantShiny de $name")
+                    val newActive = PetState.debugDeleteIndividual(this, name, wantShiny)
+                    if (newActive != null) WidgetRefresh.updateWidgets(this)
+                    adapter.notifyDataSetChanged()
+                    showLevel()   // idem al quitar - el pozo del entrenador baja con menos capturas
+                    if (!PetState.hasIndividual(this, name, !wantShiny)) {
+                        Toast.makeText(this, "${PetState.displayLabel(name)} ya no tiene ningún individuo", Toast.LENGTH_LONG).show()
+                        dlg.dismiss()
+                    } else {
+                        if (shiny == wantShiny) shiny = !wantShiny
+                        refresh()
+                    }
+                }
+            }
+            val variantsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            normalCheck = android.widget.CheckBox(this).apply { text = "Normal"; isChecked = hasNormalNow }
+            shinyIndivCheck = android.widget.CheckBox(this).apply { text = "Shiny"; isChecked = hasShinyNow }
+            variantsRow.addView(normalCheck)
+            variantsRow.addView(shinyIndivCheck)
+            normalCheck.setOnCheckedChangeListener { _, _ -> onVariantToggle(false) }
+            shinyIndivCheck.setOnCheckedChangeListener { _, _ -> onVariantToggle(true) }
+            body.addView(variantsRow)
+            if (hasNormalNow && hasShinyNow) {
+                // Las dos existen a la vez: las casillas de arriba no sirven para cambiar cual se
+                // esta viendo (tocar una ya marcada no dispara su listener) - botones aparte.
+                val viewRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                viewRow.addView(Button(this).apply {
+                    text = "Ver normal"; isAllCaps = false; textSize = 11f
+                    setOnClickListener { shiny = false; refresh() }
+                })
+                viewRow.addView(Button(this).apply {
+                    text = "Ver shiny"; isAllCaps = false; textSize = 11f
+                    setOnClickListener { shiny = true; refresh() }
+                })
+                body.addView(viewRow)
+            }
+            body.addView(TextView(this).apply {
+                text = "Editando abajo: ${if (shiny) "la shiny" else "la normal"}"
+                textSize = 11f; setTextColor(Color.parseColor("#888888"))
+                setPadding(0, dp(2), 0, dp(4))
+            })
+            body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+
+            if (isActive) {
+                body.addView(TextView(this).apply {
+                    text = "🟢 Este es el Pokémon que se ve ahora mismo en el widget de tu pantalla de inicio"
+                    textSize = 12f
+                    setTextColor(Color.parseColor("#888888"))
+                })
+            } else {
+                body.addView(TextView(this).apply {
+                    text = "Pone a este Pokémon en el widget de tu pantalla de inicio, en vez del que tengas ahora."
+                    textSize = 11.5f
+                    setTextColor(Color.parseColor("#888888"))
+                    setPadding(0, 0, 0, dp(4))
+                })
+                body.addView(Button(this).apply {
+                    text = "Poner en el widget"; isAllCaps = false
+                    setOnClickListener {
+                        val mon = allMons.find { it.name == name } ?: return@setOnClickListener
+                        dbg("debug: haciendo activo $name (shiny=$shiny)")
+                        selectPokemon(mon, shiny)
+                        android.os.Handler(mainLooper).postDelayed({ refresh() }, 700)
+                    }
+                })
+            }
+            body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+
+            val evo = PetState.evolutionInfo(this, name)
+            if (evo != null && evo.evolvesTo.isNotEmpty()) {
+                body.addView(TextView(this).apply {
+                    text = "Forzar evolución (ignora nivel/condición)"; textSize = 13f; setPadding(0, 0, 0, dp(2))
+                })
+                val evoSpinner = android.widget.Spinner(this)
+                evoSpinner.adapter = android.widget.ArrayAdapter(
+                    this, android.R.layout.simple_spinner_dropdown_item, evo.evolvesTo.map { PetState.displayLabel(it.name) }
+                )
+                body.addView(evoSpinner)
+                body.addView(Button(this).apply {
+                    text = "Evolucionar ahora"; isAllCaps = false
+                    setOnClickListener {
+                        val opt = evo.evolvesTo[evoSpinner.selectedItemPosition]
+                        val (toName, toId) = PetState.resolveEvolutionTarget(opt.name, opt.id)
+                        Thread {
+                            SpriteRepository.ensure(this@MainActivity, toName, toId, PetState.currentStyle(this@MainActivity), shiny, PetState.spriteScaleMode(this@MainActivity))
+                            runOnUiThread {
+                                dbg("debug: evolucion forzada $name -> $toName")
+                                PetState.evolveTo(this@MainActivity, name, toName, toId, shiny)
+                                currentName = toName
+                                if (isActive) WidgetRefresh.updateWidgets(this@MainActivity)
+                                adapter.notifyDataSetChanged()
+                                showLevel()   // el nivel de entrenador cuenta evoluciones - ver PetState.trainerXpPool
+                                refresh()
+                                Toast.makeText(this@MainActivity, "Evolucionado a ${PetState.displayLabel(toName)}", Toast.LENGTH_SHORT).show()
+                            }
+                        }.start()
+                    }
+                })
+                body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+            }
+
+            val megaOpts = PetState.megaOptionsFor(this, name)
+            if (megaOpts.isNotEmpty()) {
+                val activeMegaName = PetState.activeMegaSpriteName(this, name)
+                if (activeMegaName != null) {
+                    val activeLabel = megaOpts.find { it.name == activeMegaName }?.label ?: activeMegaName
+                    body.addView(TextView(this).apply {
+                        text = "$activeLabel activo ahora mismo"; textSize = 13f; setPadding(0, 0, 0, dp(4))
+                    })
+                    body.addView(Button(this).apply {
+                        text = "Quitar Mega/Gigantamax"; isAllCaps = false
+                        setOnClickListener {
+                            dbg("debug: mega/gigantamax quitado a mano de $name")
+                            PetState.debugDeactivateMega(this@MainActivity, name)
+                            if (isActive) WidgetRefresh.updateWidgets(this@MainActivity)
+                            refresh()
+                        }
+                    })
+                } else {
+                    body.addView(TextView(this).apply {
+                        text = "Activar Mega/Gigantamax (ignora nivel)"; textSize = 13f; setPadding(0, 0, 0, dp(2))
+                    })
+                    val megaSpinner = android.widget.Spinner(this)
+                    megaSpinner.adapter = android.widget.ArrayAdapter(
+                        this, android.R.layout.simple_spinner_dropdown_item, megaOpts.map { it.label }
+                    )
+                    body.addView(megaSpinner)
+                    body.addView(Button(this).apply {
+                        text = "Activar"; isAllCaps = false
+                        setOnClickListener {
+                            val opt = megaOpts[megaSpinner.selectedItemPosition]
+                            dbg("debug: mega/gigantamax forzado $name -> ${opt.name}")
+                            PetState.activateMega(this@MainActivity, name, opt.name)
+                            if (isActive) WidgetRefresh.updateWidgets(this@MainActivity)
+                            refresh()
+                        }
+                    })
+                }
+                body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+            }
+
+            // Formas decorativas (disfraces de Pikachu, patrones de Vivillon, sabores de
+            // Alcremie, cortes de Furfrou, letras de Unown, colores de Basculin/Squawkabilly/
+            // Minior, tamaños de Pumpkaboo/Gourgeist, formas de Castform/Deoxys, Shellos/
+            // Gastrodon, Flabébé/Floette/Florges, razas de Tauros, formas de Arceus/Silvally...
+            // ver PetState.DECORATIVE_FORMS) - pedido explicito del usuario: marcar/desmarcar
+            // igual que shiny, no solo elegir la puesta ahora. Rotom/Oricorio/Ogerpon/Genesect/
+            // Meloetta y las formas puramente automaticas (Darmanitan Zen, Aegislash, Cramorant,
+            // Zygarde, Terapagos...) se quedan fuera a proposito: las primeras se desbloquean por
+            // nivel sin ningun "conjunto conseguido" que marcar (el campo Nivel de arriba ya las
+            // desbloquea), y las segundas no son una eleccion del jugador.
+            val decoRoot = when (name) {
+                "gourgeist" -> "pumpkaboo"
+                "gastrodon" -> "shellos"
+                "floette", "florges" -> "flabebe"
+                else -> name
+            }
+            val decoOptions = PetState.decorativeFormsOptions(decoRoot)
+            if (decoOptions.isNotEmpty()) {
+                body.addView(TextView(this).apply {
+                    text = "Formas de ${PetState.displayLabel(decoRoot)}"; textSize = 13f; setPadding(0, 0, 0, dp(2))
+                })
+                body.addView(TextView(this).apply {
+                    text = "Marca las que quieras tener disponibles para elegir - compartidas entre el normal y el shiny de esta especie."
+                    textSize = 11f; setTextColor(Color.parseColor("#888888")); setPadding(0, 0, 0, dp(4))
+                })
+                val ownedForms = PetState.decorativeFormsOwned(this, decoRoot)
+                val currentForm = PetState.decorativeForm(this, decoRoot)
+                decoOptions.forEach { form ->
+                    body.addView(android.widget.CheckBox(this).apply {
+                        text = form + if (form == currentForm) " (puesta ahora)" else ""
+                        isChecked = form in ownedForms
+                        setOnCheckedChangeListener { _, checked ->
+                            dbg("debug: forma decorativa $decoRoot/$form owned=$checked")
+                            PetState.debugSetDecorativeFormOwned(this@MainActivity, decoRoot, form, checked)
+                            if (isActive) WidgetRefresh.updateWidgets(this@MainActivity)
+                            refresh()
+                        }
+                    })
+                }
+                body.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(10)) })
+            }
+        }
+        refresh()
+
+        val scroll = ScrollView(this).apply { addView(root) }
+        dlg = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Editar Pokémon")
+            .setView(scroll)
+            .setPositiveButton("Cerrar", null)
+            .create()
+        dlg.show()
     }
 
     /** Rellena [grid] con los fondos: primero los ya desbloqueados que le pegan al Pokemon activo
@@ -1933,6 +2664,16 @@ class MainActivity : AppCompatActivity() {
         // PetState.personalityMultipliers), asi que tiene sentido enseñarla igual aunque no se
         // tenga todavia (pedido explicito del usuario: toda la info visible en la Pokedex).
         addPersonalityInfo(root, mon.name)
+        if (PetState.hasIndividual(this, mon.name, viewShiny)) {
+            root.addView(TextView(this).apply {
+                text = "⏱️ ${formatCareHours(PetState.careHours(this@MainActivity, mon.name, viewShiny))} cuidándolo"
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#666666"))
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setPadding(0, 0, 0, dp(6))
+            })
+        }
 
         var selectBtn: Button? = null
         val evolveButtons = mutableListOf<Pair<PetState.EvoOption, Button>>()

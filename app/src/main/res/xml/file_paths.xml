@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Todo context.filesDir (donde vive pokegotchi_debug.log, ver DebugLog.file) - apuntar a
+         un NOMBRE DE ARCHIVO exacto en vez de al directorio dispara un bug conocido de
+         FileProvider (StringIndexOutOfBoundsException al calcular la ruta relativa) en algunos
+         fabricantes/versiones. Exponer el directorio entero es el patron recomendado - no
+         comparte nada mas por si solo, FileProvider solo genera un Uri para lo que el codigo le
+         pida explicitamente (ver getUriForFile). -->
+    <files-path name="debug_log" path="." />
+</paths>

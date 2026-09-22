@@ -25,6 +25,15 @@ object PetState {
     private const val KEY_REJECT_UNTIL = "reject_until"
     private const val KEY_EVOLVED_AWAY = "evolved_away"
     private const val KEY_EVOLVED_TO = "evolved_to"
+    // Horas reales que este INDIVIDUO ha sido el activo del widget (pedido explicito del
+    // usuario: "cuanto tiempo llevas cuidando a este Pokemon", distinto por shiny/genero/forma
+    // (cada uno es un individuo con su propia slot, ver slot()) pero CONTINUO a traves de toda
+    // su cadena evolutiva y de Mega/Gigantamax (evolveTo migra este valor igual que xp/salud;
+    // Mega/Gigantamax ni siquiera cambia de slot activo, asi que sigue sumando solo). Se
+    // acumula en loadWithDecay con las MISMAS horas reales ya calculadas ahi para el resto
+    // (xp/decaimiento), sin limite de 48h (igual que el xp: el tiempo real que ha pasado con
+    // el como activo cuenta entero, no solo la ventana de decaimiento).
+    private const val KEY_CARE_HOURS = "care_hours"
 
     // --- Ritmos (ajustables) ---
     // Decaimiento por hora, distinto de DIA (08-22) y de NOCHE (22-08) - la NOCHE sigue siendo
@@ -237,6 +246,11 @@ object PetState {
         val a = cumXp(l, context, name); val b = cumXp(l + 1, context, name)
         return if (b > a) ((xp - a) / (b - a)).coerceIn(0f, 1f) else 0f
     }
+
+    /** Envoltorio publico de cumXp para el menu debug: xp exacta para EMPEZAR en [level] de
+     *  [name] (su propio grupo de crecimiento, ver growthRateOf/cumXp). */
+    fun xpForLevel(context: Context, level: Int, name: String? = null): Float =
+        cumXp(level.coerceIn(1, MAX_LEVEL), context, name)
 
     // Umbral de "necesidad": por debajo de esto el Pokemon SI necesita esa accion (se indica
     // en el widget con un aviso en el boton Y una nube sobre su cabeza). Es el Pokemon quien
@@ -557,6 +571,13 @@ object PetState {
      *  decaimiento - a diferencia de `loadWithDecay` (que es solo para el Pokemon ACTIVO). Para
      *  el detalle de un Pokemon que no es el activo ahora mismo (o que ya evoluciono): sus
      *  stats estan "congeladas" desde que se dejo de cuidar. null si nunca se tuvo. */
+    /** Horas reales que este individuo ([name]/[shiny]) lleva siendo el activo del widget - 0 si
+     *  nunca lo ha sido. Continua a traves de su cadena evolutiva (ver evolveTo) y de Mega/
+     *  Gigantamax (no cambia de individuo activo, sigue sumando el mismo). Se congela (deja de
+     *  subir) en cuanto deja de ser el activo, igual que el resto de sus stats (ver rawStats). */
+    fun careHours(context: Context, name: String, shiny: Boolean = false): Float =
+        prefs(context).getFloat(k(slot(name.lowercase(), shiny), KEY_CARE_HOURS), 0f)
+
     fun rawStats(context: Context, name: String, shiny: Boolean = false): Stats? {
         val n = slot(name.lowercase(), shiny)
         val p = prefs(context)
@@ -629,6 +650,7 @@ object PetState {
 
         val stats = Stats(health, hygiene, happiness, xp)
         save(context, stats, now)
+        p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloat(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
         val lvl = levelOf(context, xp, species)
         maybeAdvanceZygardeForme(context, species, lvl)
         maybeAdvanceTerapagos(context, species, lvl)
@@ -843,6 +865,139 @@ object PetState {
         if (durable) editor.commit() else editor.apply()
     }
 
+    /** SOLO PARA EL MENU DEBUG: fija a mano cualquier subconjunto de estadisticas del individuo
+     *  ACTIVO ahora mismo (null en cualquiera = no tocar esa). Parte de loadWithDecay (no de los
+     *  valores crudos guardados) para que las que NO se tocan se queden en su valor real actual,
+     *  no en el que tenian antes de que el decaimiento pendiente se aplicara. Reinicia last_update
+     *  a ahora, igual que save() en el resto del juego. */
+    fun debugSetActiveStats(
+        context: Context, health: Float? = null, hygiene: Float? = null,
+        happiness: Float? = null, xp: Float? = null
+    ) {
+        val current = loadWithDecay(context)
+        save(
+            context,
+            Stats(
+                health = (health ?: current.health).coerceIn(0f, 100f),
+                hygiene = (hygiene ?: current.hygiene).coerceIn(0f, 100f),
+                happiness = (happiness ?: current.happiness).coerceIn(0f, 100f),
+                xp = (xp ?: current.xp).coerceAtLeast(0f)
+            ),
+            System.currentTimeMillis(),
+            durable = true
+        )
+    }
+
+    /** SOLO PARA EL MENU DEBUG: fija a mano cualquier subconjunto de estadisticas de un
+     *  individuo CUALQUIERA (no hace falta que sea el activo) - null en cualquiera = no tocar
+     *  esa. A diferencia de debugSetActiveStats, parte de rawStats (congeladas, sin
+     *  decaimiento - un individuo que no es el activo no decae, ver rawStats) en vez de
+     *  loadWithDecay. */
+    fun debugSetIndividualStats(
+        context: Context, name: String, shiny: Boolean,
+        health: Float? = null, hygiene: Float? = null, happiness: Float? = null, xp: Float? = null
+    ) {
+        val base = name.lowercase()
+        val n = slot(base, shiny)
+        val current = rawStats(context, base, shiny) ?: Stats(75f, 75f, 75f, 0f)
+        prefs(context).edit()
+            .putFloat(k(n, KEY_HEALTH), (health ?: current.health).coerceIn(0f, 100f))
+            .putFloat(k(n, KEY_HYGIENE), (hygiene ?: current.hygiene).coerceIn(0f, 100f))
+            .putFloat(k(n, KEY_HAPPINESS), (happiness ?: current.happiness).coerceIn(0f, 100f))
+            .putFloat(k(n, KEY_XP), (xp ?: current.xp).coerceAtLeast(0f))
+            .putLong(k(n, KEY_LAST), System.currentTimeMillis())
+            .commit()
+    }
+
+    /** Crea el individuo [shiny] de [name] con datos iniciales (nivel 1, barras 50-100 al azar
+     *  como cualquier individuo nuevo, sexo sorteado si aplica) SIN ponerlo como Pokemon activo
+     *  del widget - a diferencia de setPokemon/selectPokemon. Usado por resolveOffer (pedido
+     *  explicito del usuario: conseguir un Pokemon - aunque no se ponga de compañero al momento -
+     *  ya le registra sus valores iniciales, no se queda "vacio" hasta la primera vez que se
+     *  cuide) y por el menu debug (crear a mano una especie ya desbloqueada que se quedo sin
+     *  datos de antes de este cambio). No hace nada si ese individuo ya existe (no pisa datos
+     *  reales por error). */
+    fun rollFreshIndividual(context: Context, name: String, shiny: Boolean, id: Int) {
+        val base = name.lowercase()
+        val n = slot(base, shiny)
+        val p = prefs(context)
+        if (p.contains(k(n, KEY_XP))) return
+        unlock(context, base)
+        val e = p.edit()
+            .putInt(k(n, KEY_ID), id)
+            .putFloat(k(n, KEY_HEALTH), 50f + Random.nextFloat() * 50f)
+            .putFloat(k(n, KEY_HYGIENE), 50f + Random.nextFloat() * 50f)
+            .putFloat(k(n, KEY_HAPPINESS), 50f + Random.nextFloat() * 50f)
+            .putFloat(k(n, KEY_XP), 0f)
+            .putLong(k(n, KEY_LAST), System.currentTimeMillis())
+        if (base in GENDER_SPECIES) e.putString(k(n, KEY_GENDER), rollGender(base))
+        e.commit()
+    }
+
+    /** SOLO PARA EL MENU DEBUG: simula que han pasado [hours] horas de golpe - adelanta el reloj
+     *  del individuo ACTIVO (decaimiento, ver loadWithDecay) Y el de la tirada del huevo si hay
+     *  uno incubando (ver KEY_EGG_LAST_ROLL/maybeHatchEgg), sin esperar de verdad. No hace falta
+     *  disparar ningun render aqui: el siguiente tick o accion ya recalcula todo con el reloj
+     *  adelantado, igual que si el tiempo hubiera pasado de verdad. */
+    fun debugSkipHours(context: Context, hours: Float) {
+        val ms = (hours * 3_600_000L).toLong()
+        if (ms <= 0L) return
+        val n = currentSlot(context)
+        val p = prefs(context)
+        val e = p.edit()
+        e.putLong(k(n, KEY_LAST), p.getLong(k(n, KEY_LAST), System.currentTimeMillis()) - ms)
+        if (p.contains(KEY_EGG_LAST_ROLL)) {
+            e.putLong(KEY_EGG_LAST_ROLL, p.getLong(KEY_EGG_LAST_ROLL, System.currentTimeMillis()) - ms)
+        }
+        e.commit()
+    }
+
+    /** SOLO PARA EL MENU DEBUG: borra POR COMPLETO un individuo (normal o shiny segun [shiny],
+     *  ver slot()) de [name] - como si nunca se hubiera tenido. Si la OTRA variante de la misma
+     *  especie tambien ha dejado de existir, la especie entera desaparece de la Pokedex
+     *  (unlocked_species); si no, se queda desbloqueada por la que queda (mismo criterio que
+     *  isUnlocked/hasIndividual). SI es el individuo ACTIVO ahora mismo (pedido explicito del
+     *  usuario: poder quitarse cualquiera, incluido el activo, sin tener que cambiar de compañero
+     *  a mano antes), busca CUALQUIER otro individuo que exista y lo deja de compañero antes de
+     *  borrar - para no dejar "pokemon" apuntando a una slot vacia. Devuelve el nuevo compañero
+     *  (nombre, shiny) si tuvo que cambiarlo, o null si no hizo falta (no era el activo). */
+    fun debugDeleteIndividual(context: Context, name: String, shiny: Boolean): Pair<String, Boolean>? {
+        val base = name.lowercase()
+        val n = slot(base, shiny)
+        val p = prefs(context)
+        var newActive: Pair<String, Boolean>? = null
+        if (currentPokemon(context) == base && isActiveShiny(context) == shiny) {
+            val unlocked = p.getStringSet(KEY_UNLOCKED, emptySet()) ?: emptySet()
+            for (candidate in unlocked) {
+                if (candidate == base && hasIndividual(context, candidate, !shiny)) {
+                    newActive = candidate to !shiny; break
+                }
+                if (candidate == base) continue
+                if (hasIndividual(context, candidate, false)) { newActive = candidate to false; break }
+                if (hasIndividual(context, candidate, true)) { newActive = candidate to true; break }
+            }
+            newActive?.let { (rName, rShiny) ->
+                p.edit().putString(KEY_POKEMON, rName).putBoolean(KEY_ACTIVE_SHINY, rShiny).commit()
+            }
+        }
+        val e = p.edit()
+        for (suffix in listOf(
+            KEY_HEALTH, KEY_HYGIENE, KEY_HAPPINESS, KEY_XP, KEY_LAST, KEY_SHINY, KEY_ID,
+            KEY_EVOLVED_AWAY, KEY_EVOLVED_TO, KEY_GENDER,
+            KEY_THRESH_HEALTH, KEY_THRESH_HYGIENE, KEY_THRESH_HAPPY,
+            "rate_health", "rate_hygiene", "rate_happy"
+        )) {
+            e.remove(k(n, suffix))
+        }
+        if (!hasIndividual(context, base, !shiny)) {
+            val unlocked = HashSet(p.getStringSet(KEY_UNLOCKED, emptySet()) ?: emptySet())
+            unlocked.remove(base)
+            e.putStringSet(KEY_UNLOCKED, unlocked).remove(k(base, KEY_UNLOCKED_AT))
+        }
+        e.commit()
+        return newActive
+    }
+
     // ==================== EVOLUCION (Fase 2) ====================
     // Datos generados UNA vez en el PC (gen_evolutions.py, desde PokeAPI) y empaquetados en
     // assets/evolutions.json: para cada especie, de que preevoluciona (o null) y a que puede
@@ -951,6 +1106,9 @@ object PetState {
         val happiness = p.getFloat(k(fromSlot, KEY_HAPPINESS), 100f)
         val xp = p.getFloat(k(fromSlot, KEY_XP), 0f)
         val lastUpdate = p.getLong(k(fromSlot, KEY_LAST), System.currentTimeMillis())
+        // Horas de cuidado: MISMO individuo, solo cambia de especie - sigue siendo un unico
+        // contador continuo a traves de toda la cadena (pedido explicito del usuario).
+        val careHours = p.getFloat(k(fromSlot, KEY_CARE_HOURS), 0f)
         val e = p.edit()
             .putString(KEY_POKEMON, to)
             .putBoolean(KEY_ACTIVE_SHINY, shiny)
@@ -960,6 +1118,7 @@ object PetState {
             .putFloat(k(toSlot, KEY_HAPPINESS), happiness)
             .putFloat(k(toSlot, KEY_XP), xp)
             .putLong(k(toSlot, KEY_LAST), lastUpdate)
+            .putFloat(k(toSlot, KEY_CARE_HOURS), careHours)
             .putBoolean(k(to, KEY_SHINY), shiny)  // flag legacy (comparte con currentPokemon/isActiveShiny)
             .putBoolean(k(fromSlot, KEY_EVOLVED_AWAY), true)
             .putString(k(fromSlot, KEY_EVOLVED_TO), to)
@@ -1129,15 +1288,23 @@ object PetState {
         return last + (OFFER_INTERVAL_HOURS * 3_600_000f).toLong()
     }
 
-    /** Elige [name] de la oferta actual: lo desbloquea (sin cambiar el Pokemon activo) y limpia
-     *  la oferta. Reinicia el ciclo desde el momento en que ESTE regalo aparecio (no desde ahora):
-     *  pedido explicitamente asi porque anclar al instante de abrir penalizaba tardar en abrirlo
-     *  (cada retraso se acumulaba para siempre en el ciclo siguiente). Con esto, el siguiente
-     *  regalo siempre llega justo 24h despues de que este apareciera, se abra al momento o con
-     *  retraso (dentro del plazo de gracia) - si tardaste 2h en abrirlo, el timer del siguiente ya
-     *  empieza mostrando 22h en vez de 24h completas. */
+    /** Elige [name] de la oferta actual: lo desbloquea Y le crea sus valores iniciales de una vez
+     *  (nivel 1, barras al azar - ver rollFreshIndividual, pedido explicito del usuario: "cada vez
+     *  que obtienes un Pokemon... se registran sus valores iniciales como si te lo hubieses
+     *  puesto", aunque no se ponga de compañero al momento - a diferencia de antes, que solo lo
+     *  apuntaba en la Pokedex y no le creaba nada hasta la primera vez que se cuidaba de verdad),
+     *  sin cambiar el Pokemon activo, y limpia la oferta. Reinicia el ciclo desde el momento en
+     *  que ESTE regalo aparecio (no desde ahora): pedido explicitamente asi porque anclar al
+     *  instante de abrir penalizaba tardar en abrirlo (cada retraso se acumulaba para siempre en
+     *  el ciclo siguiente). Con esto, el siguiente regalo siempre llega justo 24h despues de que
+     *  este apareciera, se abra al momento o con retraso (dentro del plazo de gracia) - si
+     *  tardaste 2h en abrirlo, el timer del siguiente ya empieza mostrando 22h en vez de 24h
+     *  completas. */
     fun resolveOffer(context: Context, name: String) {
-        unlock(context, name)
+        val n = name.lowercase()
+        unlock(context, n)
+        val id = loadEvoTable(context)[n]?.id
+        if (id != null) rollFreshIndividual(context, n, false, id)
         val anchor = offerAppearedAt(context)
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
     }
@@ -1387,6 +1554,17 @@ object PetState {
         if (override >= 0) return override.coerceIn(0, EGG_CRACK_STAGES - 1)
         return prefs(context).getInt(KEY_EGG_STAGE, 0).coerceIn(0, EGG_CRACK_STAGES - 1)
     }
+
+    /** SOLO PARA EL MENU DEBUG: fuerza eggCrackStage a [stage] hasta que se quite el override
+     *  (ver debugClearEggStageOverride) - no toca la fase REAL guardada, asi que al quitarlo se
+     *  vuelve a ver la de verdad tal cual iba. */
+    fun debugSetEggStage(context: Context, stage: Int) =
+        prefs(context).edit().putInt(KEY_EGG_DEBUG_STAGE, stage.coerceIn(0, EGG_CRACK_STAGES - 1)).apply()
+
+    fun debugClearEggStageOverride(context: Context) =
+        prefs(context).edit().remove(KEY_EGG_DEBUG_STAGE).apply()
+
+    fun eggStageOverrideActive(context: Context): Boolean = prefs(context).getInt(KEY_EGG_DEBUG_STAGE, -1) >= 0
 
     /** Busca la forma BASE (raiz) de la cadena evolutiva de [name], subiendo por evolvesFrom. */
     private fun baseFormOf(context: Context, name: String): String {
@@ -1874,6 +2052,17 @@ object PetState {
         markMechanicFormSeen(context, n, optionName)
     }
 
+    /** SOLO PARA EL MENU DEBUG: desactiva la Megaevolucion/Gigantamax de [name] ahora mismo (si
+     *  tenia alguna activa) y limpia tambien su enfriamiento, para poder volver a probar otra sin
+     *  esperar. */
+    fun debugDeactivateMega(context: Context, name: String) {
+        val n = name.lowercase()
+        prefs(context).edit()
+            .putLong(k(n, KEY_MEGA_ACTIVE_UNTIL), 0L)
+            .putLong(k(n, KEY_MEGA_LAST_USED_AT), 0L)
+            .apply()
+    }
+
     // ==================== ZYGARDE: forma 10%/50%/100% ====================
     // Caso especial (pedido explicito del usuario): el ascenso 10%->50%->100% NO es una
     // Megaevolucion (no es temporal, no usa el sistema de arriba) - es un ascenso PERMANENTE por
@@ -2256,6 +2445,25 @@ object PetState {
         return true
     }
 
+    /** SOLO PARA EL MENU DEBUG: marca o desmarca [form] como "conseguida" para la especie RAIZ
+     *  [rootSpecies] (ver decorativeFormsOwned) - a diferencia de setDecorativeForm/
+     *  rollDecorativeForm (que solo AÑADEN, nunca quitan, pensadas para el sorteo real de huevo),
+     *  aqui se puede desmarcar tambien, para poder probar cualquier combinacion. Si se desmarca la
+     *  que esta puesta ahora mismo (decorativeForm), la activa pasa a otra que siga marcada (o a la
+     *  base de la lista si no queda ninguna) - nunca se deja mostrando una forma ya desmarcada. */
+    fun debugSetDecorativeFormOwned(context: Context, rootSpecies: String, form: String, owned: Boolean) {
+        val root = rootSpecies.lowercase()
+        val p = prefs(context)
+        val current = HashSet(decorativeFormsOwned(context, root))
+        if (owned) current.add(form) else current.remove(form)
+        val e = p.edit().putStringSet(k(root, KEY_DECORATIVE_FORMS_OWNED), current)
+        if (!owned && decorativeForm(context, root) == form) {
+            val fallback = current.firstOrNull() ?: decorativeFormsOptions(root).firstOrNull() ?: form
+            e.putString(k(root, KEY_DECORATIVE_FORM), fallback)
+        }
+        e.commit()
+    }
+
     fun decorativeSpriteKey(rootSpecies: String, form: String): String {
         val forms = decorativeFormsOptions(rootSpecies)
         return if (forms.firstOrNull() == form) rootSpecies else "$rootSpecies-$form"
@@ -2556,8 +2764,12 @@ object PetState {
     //
     // Cuidado al contar para no duplicar la misma hazaña en una cadena evolutiva (ej. Bulbasaur
     // -> Ivysaur -> Venusaur, 3 fases/2 evoluciones):
-    //  - CAPTURA cuenta TODAS las formas que hayas tenido alguna vez, evolucionadas o no - como
-    //    en una Pokedex real, las 3 fases son 3 entradas distintas aunque sea el mismo individuo.
+    //  - CAPTURA solo cuenta la forma ACTUAL (no evolucionada-away) de cada cadena - igual que
+    //    NIVEL (ver mas abajo). Antes contaba TODAS las formas que hayas tenido alguna vez,
+    //    evolucionadas o no (como en una Pokedex real) - bug real reportado por el usuario: eso
+    //    hacia que una cadena de 3 fases sumara captura TRES veces por el mismo individuo, en vez
+    //    de una, disparando el nivel de entrenador muy por encima de lo que tenia sentido para lo
+    //    que de verdad se tiene ahora mismo.
     //  - NIVEL solo cuenta la forma ACTUAL (no evolucionada-away) de cada cadena: la anterior ya
     //    paso su xp a la siguiente al evolucionar (ver evolveTo), contarla tambien duplicaria el
     //    mismo progreso - una cadena de 3 fases suma UN nivel, no tres.
@@ -2567,17 +2779,18 @@ object PetState {
     //    evolucionar (ver evolveTo), asi que sin este filtro un unico shiny de 3 fases contaria
     //    como si fueran 3 shinies distintos.
     //
-    // Cada TRAINER_LEVELS_PER_TOKEN niveles de entrenador desbloquea 1 fondo a tu eleccion (de
-    // los que aun no tengas) - no sigue un orden fijo.
-    // Bajado de 5 a 2 (pedido explicito del usuario): con el rediseño de fondos por tipo (18
-    // fondos, cada uno ligado a un unico tipo en vez de compartido entre 2-4 como antes) hacian
-    // falta ~85 niveles de entrenador para tenerlos todos - demasiado lento ahora que cada fondo
-    // sin desbloquear es directamente un tipo entero sin bonus posible. A 2 niveles/token, los 17
-    // que hacen falta desbloquear (1 ya viene gratis) piden 34 niveles en vez de 85.
-    private const val TRAINER_XP_PER_CAPTURE = 45f
-    private const val TRAINER_XP_PER_MON_LEVEL = 1f
-    private const val TRAINER_XP_PER_EVOLUTION = 20f
-    private const val TRAINER_XP_PER_SHINY = 50f
+    // Cuarta vuelta (pedido explicito del usuario, tras el bug de arriba): con el bug arreglado
+    // pero los mismos pesos, el nivel de entrenador seguia dominado por CAPTURA (74% del pozo con
+    // su partida real de esa ronda) - "muchas especies aunque sea a nivel bajo" se podia conseguir
+    // sin esfuerzo real (una captura vale lo mismo aunque el individuo siga a nivel 1). Bajado el
+    // peso de captura y subido el de nivel (lo unico que cuesta tiempo real, no se puede "rellenar"
+    // de golpe) para que NIVEL sea el que mas pese, con evolucion/shiny como hitos/suerte aparte -
+    // verificado con varios escenarios hipoteticos (ver conversacion) que el reparto quede sano en
+    // todas las etapas, no solo en la inicial.
+    private const val TRAINER_XP_PER_CAPTURE = 5f
+    private const val TRAINER_XP_PER_MON_LEVEL = 1.5f
+    private const val TRAINER_XP_PER_EVOLUTION = 15f
+    private const val TRAINER_XP_PER_SHINY = 40f
     private const val TRAINER_LEVELS_PER_TOKEN = 2
     private const val KEY_UNLOCKED_BGS = "unlocked_bgs"
     private const val DEFAULT_BG = "bg_meadow"
@@ -2603,9 +2816,18 @@ object PetState {
     // soltura (antes 75), ~188 dias moderado (antes 124), ~442 dias muy casual (antes 293),
     // verificado que sigue siendo alcanzable con cualquier estilo de juego (nadie se queda sin
     // llegar nunca).
-    private const val TRAINER_LVL_MARGINAL_BASE = 90f
-    private const val TRAINER_LVL_MARGINAL_STEP = 0.75f
-    private const val TRAINER_LVL_MARGINAL_FLOOR = 4.5f
+    //
+    // Cuarta vuelta (pedido explicito del usuario, junto con el cambio de pesos de arriba): ni
+    // siquiera esta curva aguantaba los nuevos pesos a largo plazo - un jugador dedicado (~150
+    // especies, evoluciones y shinies reales, mas o menos un año jugando en serio) ya tocaba el
+    // techo de 100 en unos pocos meses. Reescalada toda la curva x1.83 (misma forma, mismo
+    // suelo/paso relativo) para que ESE escenario ("un año+ de dedicacion real") sea justo el
+    // que alcanza el nivel 100 - ni una coleccion enorme (no hace falta acercarse al dex entero,
+    // eso se probo y dejaba TODO lo demas sintiendose como si no avanzaras nunca), ni unos meses
+    // sueltos (eso se probo tambien y llegaba a maximo demasiado pronto).
+    private const val TRAINER_LVL_MARGINAL_BASE = 164.75f
+    private const val TRAINER_LVL_MARGINAL_STEP = 1.373f
+    private const val TRAINER_LVL_MARGINAL_FLOOR = 8.24f
     private fun cumXpTrainer(level: Int): Float {
         if (level <= 1) return 0f
         var total = 0f
@@ -2645,8 +2867,11 @@ object PetState {
                 val slotName = key.removeSuffix(xpSuffix)
                 val isShinySlot = slotName.endsWith(SHINY_SLOT_SUFFIX)
                 val realSpecies = if (isShinySlot) slotName.removeSuffix(SHINY_SLOT_SUFFIX) else slotName
-                if (seenSpecies.add(slotName)) captureCount++
+                // captureCount YA NO cuenta las formas evolucionadas-away (ver comentario de
+                // TRAINER_XP_PER_CAPTURE) - mismo filtro que levelSum/shinyCount, para que una
+                // cadena de 3 fases sea UNA captura, no tres.
                 if (!p.getBoolean(k(slotName, KEY_EVOLVED_AWAY), false)) {
+                    if (seenSpecies.add(slotName)) captureCount++
                     val xp = when (value) { is Float -> value; is Int -> value.toFloat(); else -> 0f }
                     levelSum += levelOf(context, xp, realSpecies)
                     if (isShinySlot) shinyCount++
