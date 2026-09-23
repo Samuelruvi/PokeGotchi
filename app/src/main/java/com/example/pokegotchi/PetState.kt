@@ -476,6 +476,22 @@ object PetState {
         prefs(context).getBoolean(k(name.lowercase(), KEY_SHINY), false)
     fun setShiny(context: Context, shiny: Boolean, name: String = currentPokemon(context)) =
         prefs(context).edit().putBoolean(k(name.lowercase(), KEY_SHINY), shiny).apply()
+
+    // Favorito: marca libre del jugador (pedido explicito del usuario: pestaña "Favoritos"
+    // aparte, entre "Mis Pokemon" y "Pokedex completa"). Ligado a la CADENA EVOLUTIVA entera
+    // (pedido explicito del usuario: no es "marca este Pokemon", es "marca esta linea") - se
+    // guarda bajo la forma RAIZ de la cadena (ver baseFormOf, subiendo por evolves_from), asi
+    // que marcar a Grovyle favorito lo deja favorito para Treecko (ya criado o no) Y para
+    // Sceptile (aunque todavia no exista ese individuo) sin tener que copiar nada al
+    // evolucionar - la lectura ya resuelve siempre a la misma clave para toda la linea. Si es
+    // shiny o no SI se mantiene independiente (un Treecko shiny favorito no marca al normal).
+    fun favoriteChainKey(context: Context, name: String): String = baseFormOf(context, name.lowercase())
+    private const val KEY_FAVORITE = "favorite"
+    fun isFavorite(context: Context, name: String, shiny: Boolean = false): Boolean =
+        prefs(context).getBoolean(k(slot(favoriteChainKey(context, name), shiny), KEY_FAVORITE), false)
+    fun setFavorite(context: Context, name: String, shiny: Boolean = false, value: Boolean) =
+        prefs(context).edit().putBoolean(k(slot(favoriteChainKey(context, name), shiny), KEY_FAVORITE), value).apply()
+
     private const val KEY_SPRITE_SCALE_MODE = "sprite_scale_mode"
 
     /** "none" (vecino cercano de siempre), "partial" (mezcla al 50%) o "full" (una pasada de
@@ -983,7 +999,7 @@ object PetState {
         val e = p.edit()
         for (suffix in listOf(
             KEY_HEALTH, KEY_HYGIENE, KEY_HAPPINESS, KEY_XP, KEY_LAST, KEY_SHINY, KEY_ID,
-            KEY_EVOLVED_AWAY, KEY_EVOLVED_TO, KEY_GENDER,
+            KEY_EVOLVED_AWAY, KEY_EVOLVED_TO, KEY_GENDER, KEY_FAVORITE, KEY_CARE_HOURS,
             KEY_THRESH_HEALTH, KEY_THRESH_HYGIENE, KEY_THRESH_HAPPY,
             "rate_health", "rate_hygiene", "rate_happy"
         )) {
@@ -1109,6 +1125,9 @@ object PetState {
         // Horas de cuidado: MISMO individuo, solo cambia de especie - sigue siendo un unico
         // contador continuo a traves de toda la cadena (pedido explicito del usuario).
         val careHours = p.getFloat(k(fromSlot, KEY_CARE_HOURS), 0f)
+        // Favorito: NO hace falta copiar nada aqui - se guarda bajo la RAIZ de la cadena (ver
+        // isFavorite/setFavorite/favoriteChainKey), que es la misma antes y despues de
+        // evolucionar, asi que ya "sigue" a la linea entera sin ningun paso extra.
         val e = p.edit()
             .putString(KEY_POKEMON, to)
             .putBoolean(KEY_ACTIVE_SHINY, shiny)
@@ -1144,6 +1163,19 @@ object PetState {
         }
         if (to == "maushold" && Random.nextFloat() < RARE_EVO_VARIANT_CHANCE) {
             e.putBoolean(KEY_MAUSHOLD_THREE, true)
+        }
+        // Evolucionar a la fase final no debe poder poner huevo en el mismo instante: sin esto,
+        // el refresco inmediato del widget tras evolucionar (MainActivity llama a
+        // WidgetRefresh.updateWidgets justo despues de evolveTo) dispara onUpdate -> checkAlerts,
+        // que es donde vive la tirada de huevo - y como isFinalStage acaba de pasar a true AHORA
+        // mismo, esa es la PRIMERA tirada real posible para esta cadena, cayendo en la misma
+        // pasada que la propia evolucion en vez de esperar el intervalo normal. Bug real
+        // confirmado en el log del usuario (grovyle -> sceptile y "huevo: puesto nuevo" en el
+        // mismo segundo, nivel 36 -> ~37% de probabilidad, no hizo falta mucha mala suerte).
+        // Reiniciar aqui el reloj de tiradas retrasa la primera comprobacion real hasta que pase
+        // EGG_ROLL_INTERVAL_MS de verdad, igual que cualquier otro chequeo periodico posterior.
+        if (isFinalStage(context, to)) {
+            e.putLong(KEY_EGG_LAST_ROLL, System.currentTimeMillis())
         }
         e.commit()
         unlock(context, to)

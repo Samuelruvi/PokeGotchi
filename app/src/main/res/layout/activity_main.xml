@@ -128,11 +128,24 @@
             android:clickable="true"
             android:focusable="true" />
         <TextView
+            android:id="@+id/tab_favorites"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:text="❤️ Favoritos"
+            android:gravity="center"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:padding="8dp"
+            android:clickable="true"
+            android:focusable="true" />
+        <TextView
             android:id="@+id/tab_all"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="📖 Pokédex completa"
+            android:text="📖 Pokédex"
             android:gravity="center"
             android:textSize="13sp"
             android:textStyle="bold"

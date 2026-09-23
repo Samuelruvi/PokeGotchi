@@ -60,8 +60,16 @@ class MainActivity : AppCompatActivity() {
     // Pedido por el usuario: buscar un Pokemon concreto entre los ~1025 de toda la Pokedex (sin
     // saber la generacion) es incomodo - pestaña alternativa que solo muestra los YA
     // desbloqueados, sin filtrar por generacion (normalmente son pocos, caben bien juntos).
-    // Empieza en true (abre en "Mis Pokemon" por defecto, a peticion del usuario).
-    private var showOnlyMine = true
+    // Empieza en FILTER_MINE (abre en "Mis Pokemon" por defecto, a peticion del usuario).
+    // FILTER_FAVORITES (pedido explicito del usuario: pestaña aparte entre "Mis Pokemon" y
+    // "Pokedex completa" con solo los marcados como favoritos) se comporta igual que
+    // FILTER_MINE en todo lo que no sea el propio filtro de [rows] (interactive=true en la
+    // ficha, sin fila de generaciones, tinte de evolucionado activo) - la unica diferencia real
+    // es QUE conjunto de especies entra en [rows].
+    private val FILTER_MINE = "mine"
+    private val FILTER_FAVORITES = "favorites"
+    private val FILTER_ALL = "all"
+    private var filterMode = FILTER_MINE
     private var sortBy = "id"   // "id" (num. Pokedex) | "level"
     private var searchQuery = ""   // filtro de texto libre, se combina con el resto (ver refreshRows)
     private lateinit var tvLevel: TextView
@@ -130,8 +138,9 @@ class MainActivity : AppCompatActivity() {
         // haria nada.
         rv.post { scrollToActivePokemon(smooth = false) }
 
-        findViewById<TextView>(R.id.tab_mine).setOnClickListener { setFilterMode(true) }
-        findViewById<TextView>(R.id.tab_all).setOnClickListener { setFilterMode(false) }
+        findViewById<TextView>(R.id.tab_mine).setOnClickListener { setFilterMode(FILTER_MINE) }
+        findViewById<TextView>(R.id.tab_favorites).setOnClickListener { setFilterMode(FILTER_FAVORITES) }
+        findViewById<TextView>(R.id.tab_all).setOnClickListener { setFilterMode(FILTER_ALL) }
         updateFilterTabs()
         findViewById<EditText>(R.id.search_dex).addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -141,7 +150,7 @@ class MainActivity : AppCompatActivity() {
                 // Al buscar algo, se salta a "Todas" las generaciones - si no, buscar solo
                 // encontraria resultados dentro de la generacion que tocara tener puesta,
                 // pedido explicito del usuario.
-                if (searchQuery.isNotEmpty() && !showOnlyMine && currentGen != 0) {
+                if (searchQuery.isNotEmpty() && filterMode == FILTER_ALL && currentGen != 0) {
                     currentGen = 0
                     buildGenRow()
                 }
@@ -412,15 +421,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Aviso de "¿seguro?" antes de quedarse con el Pokemon del huevo: deja claro que el Pokemon
-     *  ACTUAL (con el que se lleva jugando hasta ahora) se pierde y el nuevo empieza en nivel 1. */
+     *  ACTUAL (con el que se lleva jugando hasta ahora) se pierde. La cria del huevo NO siempre
+     *  empieza en nivel 1: si ya existia un individuo de esa misma especie+shiny sin evolucionar
+     *  (ej. un Treecko normal "de repuesto" de un huevo anterior nunca evolucionado), setPokemon
+     *  lo reactiva tal cual estaba en vez de resetearlo (ver isFreshIndividual, PetState.kt) -
+     *  texto desactualizado detectado por el usuario tras el cambio que hizo que normal/shiny (y
+     *  distintos individuos de la misma especie) convivan de verdad en vez de pisarse. */
     private fun confirmKeepEggHatch(hatchDialog: androidx.appcompat.app.AlertDialog, species: String) {
         val current = PetState.currentPokemon(this)
         val level = PetState.levelOf(this, PetState.loadWithDecay(this).xp, current)
+        val hatchShiny = PetState.eggIsShiny(this)
+        val alreadyExists = PetState.hasIndividual(this, species, hatchShiny) && !PetState.hasEvolvedAway(this, species, hatchShiny)
+        val continuationText = if (alreadyExists) {
+            val existingLevel = PetState.levelForPokemon(this, species, hatchShiny) ?: 1
+            "Ya tenías un $species ${if (hatchShiny) "shiny " else ""}sin evolucionar: retomarás ese mismo, en Nv. $existingLevel."
+        } else {
+            "$species empezará desde nivel 1."
+        }
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("¿Seguro?")
             .setMessage(
                 "Si te quedas con $species vas a dejar de cuidar a tu $current (Nv. $level) y todo lo " +
-                "que hubiera evolucionado a partir de ahi. $species empezará desde nivel 1."
+                "que hubiera evolucionado a partir de ahi. $continuationText"
             )
             .setPositiveButton("Sí, quedármelo") { _, _ ->
                 val shinyKept = PetState.eggIsShiny(this)
@@ -661,21 +683,33 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             for (mon in rowMons) {
-                val cell = ImageView(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(92), dp(84)).apply {
+                val cellW = dp(92); val cellH = dp(84)
+                // Legendario/mitico (ver PetState.OfferMon/evolutionInfo.rare): mismo aviso
+                // visual que un shiny al eclosionar (playShinySparkles), para que destaque solo
+                // sobre el resto de la oferta - pedido explicito del usuario.
+                val isRare = PetState.evolutionInfo(this@MainActivity, mon.name)?.rare == true
+                val cellFrame = android.widget.FrameLayout(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(cellW, cellH).apply {
                         setMargins(dp(5), dp(5), dp(5), dp(5))
                     }
-                    scaleType = ImageView.ScaleType.FIT_CENTER
                     background = android.graphics.drawable.GradientDrawable().apply {
                         setColor(Color.parseColor("#40FFFFFF"))
                         cornerRadius = dp(12).toFloat()
                     }
                     isClickable = true
                     isFocusable = true
+                }
+                val cell = ImageView(this).apply {
+                    layoutParams = android.widget.FrameLayout.LayoutParams(
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                    scaleType = ImageView.ScaleType.FIT_CENTER
                     setPadding(dp(4), dp(4), dp(4), dp(4))
                 }
                 loadAnimatedSprite(cell, mon.name)
-                cell.setOnClickListener {
+                cellFrame.addView(cell)
+                if (isRare) playShinySparkles(cellFrame, cellW, cellH)
+                cellFrame.setOnClickListener {
                     dbg("regalo: elegido ${mon.name} de entre ${offer.joinToString(",") { it.name }}")
                     PetState.resolveOffer(this@MainActivity, mon.name)
                     NotificationHelper.cancelOfferReady(this@MainActivity)
@@ -685,7 +719,7 @@ class MainActivity : AppCompatActivity() {
                     adapter.notifyDataSetChanged()
                     Toast.makeText(this@MainActivity, "¡${PetState.displayLabel(mon.name)} añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
                 }
-                rowLl.addView(cell)
+                rowLl.addView(cellFrame)
             }
             content.addView(rowLl)
         }
@@ -1195,18 +1229,26 @@ class MainActivity : AppCompatActivity() {
         return PetState.rawStats(this, mon.name, shiny)?.let { PetState.levelOf(this, it.xp, mon.name) }
     }
 
+    /** ¿Alguno de los dos individuos (normal/shiny) de [name] esta marcado como favorito? Una
+     *  especie con solo uno de los dos favorito ya cuenta para la pestaña Favoritos. Excluye la
+     *  forma YA evolucionada-away: el favorito esta ligado a la LINEA (se hereda al evolucionar,
+     *  ver evolveTo), asi que solo debe aparecer una vez en la pestaña - representado por la
+     *  forma ACTUAL de esa linea, no por cada etapa antigua que tambien arrastra el flag. */
+    private fun isFavoriteSpecies(name: String): Boolean =
+        (PetState.hasIndividual(this, name, false) && !PetState.hasEvolvedAway(this, name, false) && PetState.isFavorite(this, name, false)) ||
+            (PetState.hasIndividual(this, name, true) && !PetState.hasEvolvedAway(this, name, true) && PetState.isFavorite(this, name, true))
+
     /** Recalcula [rows] segun el modo activo: "Mis Pokemon" (solo desbloqueados, todas las
-     *  generaciones juntas) o "Pokedex completa" (solo [currentGen], como siempre); y segun
-     *  [sortBy]: por numero de Pokedex, o por nivel (los bloqueados/sin nivel se van al final).
-     *  Tambien oculta la fila de generaciones en modo "Mis Pokemon" (no aplica: los desbloqueados
-     *  normalmente son pocos, no hace falta filtrar mas). */
+     *  generaciones juntas), "Favoritos" (solo los marcados, ver isFavoriteSpecies) o "Pokedex
+     *  completa" (solo [currentGen], como siempre); y segun [sortBy]: por numero de Pokedex, o
+     *  por nivel (los bloqueados/sin nivel se van al final). Tambien oculta la fila de
+     *  generaciones salvo en Pokedex completa (no aplica en los otros dos: los desbloqueados/
+     *  favoritos normalmente son pocos, no hace falta filtrar mas). */
     private fun refreshRows() {
-        var base = if (showOnlyMine) {
-            allMons.filter { PetState.isUnlocked(this, it.name) }
-        } else if (currentGen == 0) {
-            allMons
-        } else {
-            allMons.filter { it.gen == currentGen }
+        var base = when (filterMode) {
+            FILTER_MINE -> allMons.filter { PetState.isUnlocked(this, it.name) }
+            FILTER_FAVORITES -> allMons.filter { isFavoriteSpecies(it.name) }
+            else -> if (currentGen == 0) allMons else allMons.filter { it.gen == currentGen }
         }
         val q = searchQuery.lowercase()
         if (q.isNotEmpty()) {
@@ -1227,16 +1269,16 @@ class MainActivity : AppCompatActivity() {
             )
             else -> base.sortedBy { it.id }
         }
-        findViewById<View>(R.id.gen_row_scroll).visibility = if (showOnlyMine) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.gen_row_scroll).visibility = if (filterMode == FILTER_ALL) View.VISIBLE else View.GONE
     }
 
-    private fun setFilterMode(mine: Boolean) {
-        if (showOnlyMine == mine) return
-        showOnlyMine = mine
+    private fun setFilterMode(mode: String) {
+        if (filterMode == mode) return
+        filterMode = mode
         refreshRows()
         updateFilterTabs()
         adapter.notifyDataSetChanged()
-        if (mine) findViewById<RecyclerView>(R.id.rv).post { scrollToActivePokemon() }
+        if (mode == FILTER_MINE) findViewById<RecyclerView>(R.id.rv).post { scrollToActivePokemon() }
     }
 
     /** Lleva la vista hasta la celda del Pokemon activo ahora mismo (PetState.currentPokemon),
@@ -1279,12 +1321,16 @@ class MainActivity : AppCompatActivity() {
     private fun updateFilterTabs() {
         val active = Color.parseColor("#EE1515"); val inactive = Color.parseColor("#DDDDDD")
         findViewById<TextView>(R.id.tab_mine).apply {
-            setBackgroundColor(if (showOnlyMine) active else inactive)
-            setTextColor(if (showOnlyMine) Color.WHITE else Color.BLACK)
+            setBackgroundColor(if (filterMode == FILTER_MINE) active else inactive)
+            setTextColor(if (filterMode == FILTER_MINE) Color.WHITE else Color.BLACK)
+        }
+        findViewById<TextView>(R.id.tab_favorites).apply {
+            setBackgroundColor(if (filterMode == FILTER_FAVORITES) active else inactive)
+            setTextColor(if (filterMode == FILTER_FAVORITES) Color.WHITE else Color.BLACK)
         }
         findViewById<TextView>(R.id.tab_all).apply {
-            setBackgroundColor(if (!showOnlyMine) active else inactive)
-            setTextColor(if (!showOnlyMine) Color.WHITE else Color.BLACK)
+            setBackgroundColor(if (filterMode == FILTER_ALL) active else inactive)
+            setTextColor(if (filterMode == FILTER_ALL) Color.WHITE else Color.BLACK)
         }
     }
 
@@ -2529,7 +2575,9 @@ class MainActivity : AppCompatActivity() {
      *  informativa hay un boton para saltar a la interactiva si ya se tiene (ver
      *  showDetailDialog, parametro interactive). */
     private fun onPick(mon: Mon) {
-        showDetailDialog(mon, interactive = showOnlyMine)
+        // Favoritos se comporta como Mis Pokemon (interactiva: son cosas que ya tienes) - solo
+        // Pokedex completa es la ficha de solo consulta.
+        showDetailDialog(mon, interactive = filterMode != FILTER_ALL)
     }
 
     /** Descarga el sprite de [mon] y lo pone como Pokemon activo del widget. [shiny] elige que
@@ -2671,8 +2719,25 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.parseColor("#666666"))
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                setPadding(0, 0, 0, dp(6))
+                setPadding(0, 0, 0, dp(4))
             })
+            // Favorito: pedido explicito del usuario, para poder filtrarlos aparte en la
+            // pestaña Favoritos (ver isFavoriteSpecies/FILTER_FAVORITES). Por individuo (el
+            // shiny y el normal de una misma especie se marcan por separado).
+            lateinit var favBtn: Button
+            fun favLabel(fav: Boolean) = if (fav) "❤️ Favorito" else "🤍 Marcar favorito"
+            favBtn = Button(this).apply {
+                text = favLabel(PetState.isFavorite(this@MainActivity, mon.name, viewShiny))
+                isAllCaps = false
+                setOnClickListener {
+                    val newValue = !PetState.isFavorite(this@MainActivity, mon.name, viewShiny)
+                    PetState.setFavorite(this@MainActivity, mon.name, viewShiny, newValue)
+                    favBtn.text = favLabel(newValue)
+                    if (filterMode == FILTER_FAVORITES) { refreshRows(); adapter.notifyDataSetChanged() }
+                }
+            }
+            root.addView(favBtn)
+            root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(6)) })
         }
 
         var selectBtn: Button? = null
@@ -3213,7 +3278,7 @@ class MainActivity : AppCompatActivity() {
         // usuario.
         openCareBtn?.setOnClickListener {
             dialog.dismiss()
-            if (!showOnlyMine) setFilterMode(true)
+            if (filterMode != FILTER_MINE) setFilterMode(FILTER_MINE)
             val idx = rows.indexOfFirst { it.name == mon.name }
             if (idx >= 0) findViewById<RecyclerView>(R.id.rv).smoothScrollToPosition(idx)
         }
@@ -4082,16 +4147,16 @@ class MainActivity : AppCompatActivity() {
                 hasShinyIndiv -> true
                 else -> false
             }
-            // El tinte gris de "ya evoluciono" solo tiene sentido en "Mis Pokemon" (tu roster
-            // real: el Pokemon en si ya no esta "activo", paso a su forma siguiente) - en la
-            // Pokedex completa (registro de especies vistas) se ve a color igual que cualquier
-            // otra especie conseguida, pedido explicito del usuario. Se consulta el individuo
-            // shiny si existe (prioridad), si no el normal (comportamiento de siempre).
+            // El tinte gris de "ya evoluciono" solo tiene sentido en "Mis Pokemon"/"Favoritos"
+            // (tu roster real: el Pokemon en si ya no esta "activo", paso a su forma siguiente) -
+            // en la Pokedex completa (registro de especies vistas) se ve a color igual que
+            // cualquier otra especie conseguida, pedido explicito del usuario. Se consulta el
+            // individuo shiny si existe (prioridad), si no el normal (comportamiento de siempre).
             // Fusion activa de otra especie (Kyurem/Necrozma/Calyrex): mientras dure, este
             // ingrediente se ve igual de "no disponible" que un evolucionado - ver
             // PetState.isFusionDonorBusy y el bloque equivalente en showDetailDialog.
             val fusionBusy = unlocked && PetState.isFusionDonorBusy(this@MainActivity, row.name)
-            val evolvedAway = unlocked && (fusionBusy || (showOnlyMine && PetState.hasEvolvedAway(this@MainActivity, row.name, shiny = shiny)))
+            val evolvedAway = unlocked && (fusionBusy || (filterMode != FILTER_ALL && PetState.hasEvolvedAway(this@MainActivity, row.name, shiny = shiny)))
             holder.name.text = "#${row.id} ${PetState.displayLabel(row.name)}"
             // Estrellita: fue shiny alguna vez (el flag es por especie, se conserva aunque ya
             // haya evolucionado a otra cosa - no solo el Pokemon activo ahora mismo).
