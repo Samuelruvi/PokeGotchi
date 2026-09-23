@@ -138,6 +138,12 @@ class MainActivity : AppCompatActivity() {
         // haria nada.
         rv.post { scrollToActivePokemon(smooth = false) }
 
+        // Tocar el nivel de entrenador, cuando hay algun fondo por desbloquear (mismo aviso "⬆️"
+        // que ya se enseña en showLevel()), abre directamente Ajustes en la rejilla de fondos -
+        // pedido explicito del usuario, en vez de tener que entrar al menu ⋮ a mano para verlo.
+        tvTrainerLevel.setOnClickListener {
+            if (PetState.bgTokensAvailable(this) > 0) showSettingsDialog()
+        }
         findViewById<TextView>(R.id.tab_mine).setOnClickListener { setFilterMode(FILTER_MINE) }
         findViewById<TextView>(R.id.tab_favorites).setOnClickListener { setFilterMode(FILTER_FAVORITES) }
         findViewById<TextView>(R.id.tab_all).setOnClickListener { setFilterMode(FILTER_ALL) }
@@ -1270,6 +1276,17 @@ class MainActivity : AppCompatActivity() {
             else -> base.sortedBy { it.id }
         }
         findViewById<View>(R.id.gen_row_scroll).visibility = if (filterMode == FILTER_ALL) View.VISIBLE else View.GONE
+        // Contador de especies por numero de Pokedex (no de individuos - un normal+shiny de la
+        // misma especie cuenta una sola vez), pedido explicito del usuario - reemplaza el "nombre
+        // · Nivel" que antes vivia aqui (ver tvLevel/showLevel, ya no le toca ese texto). Se
+        // recalcula con cualquier cambio de pestaña/genero/busqueda ya que todos pasan por
+        // refreshRows(). El total SIEMPRE es el total real de especies del juego (todas las
+        // posibilidades, pedido explicito), no el total de la pestaña/filtro activo - asi el
+        // porcentaje es siempre el % real de la Pokedex completa, mires donde mires.
+        val speciesCount = rows.map { it.id }.distinct().size
+        val totalSpecies = allMons.map { it.id }.distinct().size
+        val pct = if (totalSpecies > 0) speciesCount * 100f / totalSpecies else 0f
+        tvLevel.text = "$speciesCount / $totalSpecies especies (${"%.1f".format(pct)}%)"
     }
 
     private fun setFilterMode(mode: String) {
@@ -1990,6 +2007,17 @@ class MainActivity : AppCompatActivity() {
                     val newActive = PetState.debugDeleteIndividual(this, name, wantShiny)
                     if (newActive != null) WidgetRefresh.updateWidgets(this)
                     adapter.notifyDataSetChanged()
+                    // Borrar tu UNICO individuo en TODA la partida (ninguna otra especie con
+                    // datos) resetea KEY_STARTER_DONE dentro de debugDeleteIndividual - hay que
+                    // mandar a StarterActivity ya mismo (bug real reportado: sin esto, esta misma
+                    // pantalla se quedaba a medias, con el Pokemon activo sin datos detras).
+                    if (!PetState.hasChosenStarter(this)) {
+                        dlg.dismiss()
+                        Toast.makeText(this, "Ya no tienes ningún Pokémon - elige un inicial nuevo", Toast.LENGTH_LONG).show()
+                        startActivity(Intent(this, StarterActivity::class.java))
+                        finish()
+                        return
+                    }
                     showLevel()   // idem al quitar - el pozo del entrenador baja con menos capturas
                     if (!PetState.hasIndividual(this, name, !wantShiny)) {
                         Toast.makeText(this, "${PetState.displayLabel(name)} ya no tiene ningún individuo", Toast.LENGTH_LONG).show()
@@ -2550,7 +2578,9 @@ class MainActivity : AppCompatActivity() {
         val s = PetState.loadWithDecay(this)
         val tokens = PetState.bgTokensAvailable(this)
         val bgSuffix = if (tokens > 0) " ⬆️" else ""
-        tvLevel.text = "$selected · Nivel ${PetState.levelOf(this, s.xp, selected)}"
+        // tv_level (tvLevel) ya no muestra "especie · Nivel X" aqui - pedido explicito del
+        // usuario: ahora esta vista enseña el contador de especies (ver refreshRows()), asi que
+        // showLevel() ya solo actualiza el nivel de entrenador.
         tvTrainerLevel.text = "Entrenador Nv.${PetState.trainerLevel(this)}$bgSuffix"
         trainerLevelBar.max = 1000
         trainerLevelBar.progress = (PetState.trainerProgress(this) * 1000).toInt()

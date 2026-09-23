@@ -1002,14 +1002,33 @@ object PetState {
                 if (hasIndividual(context, candidate, false)) { newActive = candidate to false; break }
                 if (hasIndividual(context, candidate, true)) { newActive = candidate to true; break }
             }
-            newActive?.let { (rName, rShiny) ->
-                p.edit().putString(KEY_POKEMON, rName).putBoolean(KEY_ACTIVE_SHINY, rShiny).commit()
+            if (newActive != null) {
+                newActive.let { (rName, rShiny) ->
+                    p.edit().putString(KEY_POKEMON, rName).putBoolean(KEY_ACTIVE_SHINY, rShiny).commit()
+                }
+            } else {
+                // Bug real reportado por el usuario: borrar tu UNICO individuo (sin ningun otro
+                // en ninguna especie) dejaba KEY_POKEMON apuntando a una especie sin datos - un
+                // estado roto que el resto de la app (renderStatsOnly, refreshRows, el propio
+                // widget) no esta preparado para leer. En vez de eso, se trata igual que "todavia
+                // no se ha elegido starter": se resetea KEY_STARTER_DONE, y la app/widget vuelven
+                // a mandar a StarterActivity solos (ver MainActivity.onCreate/
+                // PokeWidgetProvider.renderWelcome) - esto es ademas la unica forma real de
+                // "deshacer" el starter elegido para poder escoger otro.
+                p.edit().putBoolean(KEY_STARTER_DONE, false).remove(KEY_POKEMON).remove(KEY_ACTIVE_SHINY).commit()
             }
         }
         val e = p.edit()
+        // KEY_FAVORITE NO va en este bucle generico (bug real, confirmado con una prueba en el
+        // dispositivo): el favorito se guarda bajo la RAIZ de la cadena evolutiva (ver
+        // favoriteChainKey), asi que si [base] resulta SER esa raiz, "k(n, KEY_FAVORITE)" es
+        // exactamente la misma clave que comparte TODA la cadena - borrarla aqui sin mas le
+        // quitaba el favorito a una evolucion posterior que siguiera existiendo intacta (ej.
+        // borrar un Cyndaquil ya evolucionado a Quilava le quitaba el favorito a Quilava, que
+        // nunca se toco). Se trata aparte mas abajo, mirando toda la cadena antes de borrar.
         for (suffix in listOf(
             KEY_HEALTH, KEY_HYGIENE, KEY_HAPPINESS, KEY_XP, KEY_LAST, KEY_SHINY, KEY_ID,
-            KEY_EVOLVED_AWAY, KEY_EVOLVED_TO, KEY_GENDER, KEY_FAVORITE, KEY_CARE_HOURS,
+            KEY_EVOLVED_AWAY, KEY_EVOLVED_TO, KEY_GENDER, KEY_CARE_HOURS,
             KEY_THRESH_HEALTH, KEY_THRESH_HYGIENE, KEY_THRESH_HAPPY,
             "rate_health", "rate_hygiene", "rate_happy"
         )) {
@@ -1020,8 +1039,29 @@ object PetState {
             unlocked.remove(base)
             e.putStringSet(KEY_UNLOCKED, unlocked).remove(k(base, KEY_UNLOCKED_AT))
         }
+        // Favorito: solo se borra si YA NO queda ningun individuo (de esta misma [shiny]) en
+        // NINGUNA etapa de la cadena entera - si queda cualquier otra (evolucionada o no), el
+        // favorito compartido debe sobrevivir intacto para esa etapa que sigue existiendo.
+        if (!chainHasAnyIndividual(context, base, shiny)) {
+            e.remove(k(slot(favoriteChainKey(context, base), shiny), KEY_FAVORITE))
+        }
         e.commit()
         return newActive
+    }
+
+    /** ¿Queda algun individuo [shiny] vivo en CUALQUIER etapa de la cadena evolutiva de [name]
+     *  (subiendo hasta la raiz y bajando por TODAS las ramas de evolucion, no solo la lineal)?
+     *  Usado para saber si es seguro borrar el favorito compartido de toda la cadena al borrar
+     *  un individuo concreto (ver debugDeleteIndividual). */
+    private fun chainHasAnyIndividual(context: Context, name: String, shiny: Boolean): Boolean {
+        val root = baseFormOf(context, name)
+        fun walk(species: String, seen: MutableSet<String>): Boolean {
+            if (!seen.add(species)) return false
+            if (hasIndividual(context, species, shiny)) return true
+            val evolvesTo = evolutionInfo(context, species)?.evolvesTo ?: emptyList()
+            return evolvesTo.any { walk(it.name, seen) }
+        }
+        return walk(root, mutableSetOf())
     }
 
     // ==================== EVOLUCION (Fase 2) ====================
@@ -3051,6 +3091,27 @@ object PetState {
         if (bgTokensAvailable(context) <= 0) return false
         prefs(context).edit().putStringSet(KEY_UNLOCKED_BGS, unlockedBackgrounds(context) + bg).apply()
         return true
+    }
+
+    /** Llamar SOLO al elegir starter (StarterActivity.onPick): desbloquea GRATIS (sin gastar
+     *  ficha de nivel de entrenador) el/los fondo(s) a juego con el tipo de [name], y pone el
+     *  primero como fondo activo. Pedido explicito del usuario: antes solo los iniciales de tipo
+     *  planta "parecian" tener esto, porque el fondo por defecto (bg_meadow) YA es de tipo planta
+     *  por pura coincidencia - el resto de tipos se quedaban con ese mismo fondo sin ningun
+     *  sentido narrativo. Si [name] no tiene datos de tipo (no deberia pasar con un inicial real),
+     *  no hace nada - se queda con el fondo por defecto de siempre. REEMPLAZA el set de
+     *  desbloqueados en vez de sumarle el de siempre (bg_meadow): ese "por defecto" nunca se
+     *  gano de verdad, era solo el valor de respaldo de un set vacio (ver unlockedBackgrounds) -
+     *  bug real reportado por el usuario, dejaba 2 fondos desbloqueados (planta + el del tipo
+     *  real) en vez de solo el que corresponde. Seguro reemplazar sin mas: esta funcion solo se
+     *  llama una vez, al elegir starter, antes de que exista ninguna ficha ganada de verdad. */
+    fun unlockStarterBackground(context: Context, name: String) {
+        val suggested = suggestedBackgrounds(context, name, shiny = false)
+        if (suggested.isEmpty()) return
+        prefs(context).edit()
+            .putStringSet(KEY_UNLOCKED_BGS, suggested.toSet())
+            .putString(KEY_BG, suggested.first())
+            .apply()
     }
 
     // ==================== FONDO A JUEGO: BENEFICIOS ====================

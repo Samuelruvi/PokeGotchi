@@ -78,6 +78,9 @@ class StarterActivity : AppCompatActivity() {
                 if (meta != null) {
                     PetState.setPokemon(this, s.name, s.id)
                     PetState.markStarterChosen(this)
+                    // Fondo a juego con el tipo del inicial elegido, gratis (pedido explicito
+                    // del usuario - ver PetState.unlockStarterBackground).
+                    PetState.unlockStarterBackground(this, s.name)
                     WidgetRefresh.updateWidgets(this)
                     startActivity(Intent(this, MainActivity::class.java))
                     finish()

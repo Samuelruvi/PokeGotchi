@@ -78,7 +78,12 @@ object SpriteRepository {
     // estilo/nitidez que cada movil tuviera cacheado.
     // Subido a 13: alcremie-gmax reemplazado otra vez (el de Showdown tenia ruido/dithering
     // visible frente al del paquete pokerogue-assets-beta, estatico pero limpio de verdad).
-    private const val CACHE_VERSION = 13
+    // Subido a 14: recorte de margen sobrante para las hojas de sprite con lienzo mas grande de
+    // lo que dibujan de verdad (Froakie/Sprigatito/Fuecoco/Quaxly/Rowlet/Litten/Grookey/
+    // Scorbunny/Sobble). Subido a 15: la v14 solo recortaba el ALTO y el usuario confirmo en el
+    // dispositivo real que seguian viendose pequeños - medido con datos reales que el margen
+    // sobrante esta en ANCHO Y ALTO a la vez (ver contentCropRect/localFrames), no solo uno.
+    private const val CACHE_VERSION = 15
     // Sombra ovalada bajo los pies, como en los juegos originales. Se calcula POR FRAME (no un
     // valor fijo para todo el Pokemon) a partir del propio bounding box opaco de ESE frame, y se
     // hornea directamente en el PNG cacheado - asi seguirla en la animacion sale gratis (es parte
@@ -184,6 +189,39 @@ object SpriteRepository {
     // duracion por fotograma real como en un GIF, es solo una imagen) - 100ms de toda la vida
     // para el resto de animaciones de la app, encaja bien aqui tambien.
     private const val LOCAL_SPRITE_INTERVAL_MS = 100
+
+    /** Rectangulo LOCAL (relativo a la celda de cada fotograma, 0..h-1 en ambos ejes) con
+     *  contenido real (opaco) - union de los fotogramas [frameIndices] dentro de [strip] (cada
+     *  uno de tamaño h x h, en la columna i*h), para recortar el mismo margen sobrante en ANCHO Y
+     *  ALTO a la vez. Null si ya esta suficientemente ajustado (el lado mas largo del contenido
+     *  ya ocupa >=85% de h, ver localFrames) o si no hay ningun pixel opaco.
+     *  Bug real reportado por el usuario, corregido dos veces: la primera vuelta solo recortaba
+     *  el alto y el resultado seguia viendose pequeño - medido con datos reales que el problema
+     *  es en LAS DOS dimensiones (ej. Froakie ocupa 33% del ancho de su celda Y 36% del alto, no
+     *  es una franja ancha con solo margen vertical). Se usa la UNION del recuadro de cada
+     *  fotograma por separado (nunca solo uno, para no recortar de mas una pose puntual mas
+     *  grande que las demas, ej. un salto) - compartido entre localFrames (animado) y
+     *  localFirstFrame (miniatura estatica, la que se vio primero en la pantalla de elegir
+     *  starter) para no duplicar el mismo calculo/bug dos veces. */
+    private fun contentCropRect(strip: Bitmap, h: Int, frameIndices: List<Int>): android.graphics.Rect? {
+        var left = h; var top = h; var right = -1; var bottom = -1
+        val buf = IntArray(h * h)
+        for (i in frameIndices) {
+            strip.getPixels(buf, 0, h, i * h, 0, h, h)
+            for (y in 0 until h) {
+                for (x in 0 until h) {
+                    if ((buf[y * h + x] ushr 24) > 16) {
+                        if (x < left) left = x; if (x > right) right = x
+                        if (y < top) top = y; if (y > bottom) bottom = y
+                    }
+                }
+            }
+        }
+        if (right < left || bottom < top) return null
+        val cropW = right - left + 1; val cropH = bottom - top + 1
+        return if (maxOf(cropW, cropH) < (h * 0.85f).toInt()) android.graphics.Rect(left, top, right + 1, bottom + 1) else null
+    }
+
     private fun localFrames(context: Context, key: String, shiny: Boolean): Pair<List<Bitmap>, Int>? {
         val folder = if (shiny) "shiny" else "normal"
         val path = "localsprites/$folder/$key.png"
@@ -198,11 +236,20 @@ object SpriteRepository {
         val total = strip.width / h
         if (total <= 0) { strip.recycle(); return null }
         val step = maxOf(1, (total + MAX_FRAMES - 1) / MAX_FRAMES)
-        val list = ArrayList<Bitmap>()
+        val indices = ArrayList<Int>()
         var idx = 0
-        while (idx < total) {
-            list.add(Bitmap.createBitmap(strip, idx * h, 0, h, h))
-            idx += step
+        while (idx < total) { indices.add(idx); idx += step }
+
+        // Recorte de margen sobrante en ancho Y alto (bug real reportado por el usuario: Froakie/
+        // Sprigatito/Fuecoco/Quaxly/Rowlet/Litten/Grookey/Scorbunny/Sobble se veian mas pequeños
+        // que el resto de iniciales en la pantalla de elegir starter) - ver contentCropRect.
+        val crop = contentCropRect(strip, h, indices)
+        val list = ArrayList<Bitmap>()
+        for (i in indices) {
+            list.add(
+                if (crop != null) Bitmap.createBitmap(strip, i * h + crop.left, crop.top, crop.width(), crop.height())
+                else Bitmap.createBitmap(strip, i * h, 0, h, h)
+            )
         }
         // Bitmap.createBitmap(source, x, y, w, h) devuelve el MISMO objeto source (sin copiar)
         // cuando el recorte pedido es el lienzo entero (x=0,y=0,w=source.width,h=source.height) -
@@ -228,7 +275,11 @@ object SpriteRepository {
             val strip = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
             val h = strip.height
             if (h <= 0 || strip.width < h) { strip.recycle(); return null }
-            val frame = Bitmap.createBitmap(strip, 0, 0, h, h)
+            // Mismo recorte de margen sobrante que localFrames (ver contentCropRect) - aqui solo
+            // hace falta mirar el PRIMER fotograma, que es el unico que se usa.
+            val crop = contentCropRect(strip, h, listOf(0))
+            val frame = if (crop != null) Bitmap.createBitmap(strip, crop.left, crop.top, crop.width(), crop.height())
+                else Bitmap.createBitmap(strip, 0, 0, h, h)
             // Mismo caso que en localFrames: si el sprite es un unico fotograma cuadrado
             // (strip.width == h, ej. los Gigamax de Urshifu), createBitmap devuelve el MISMO
             // objeto strip sin copiar - reciclarlo a ciegas invalidaba tambien "frame".
