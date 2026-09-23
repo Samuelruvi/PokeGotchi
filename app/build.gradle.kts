@@ -18,7 +18,7 @@ android {
         // rechaza) al descargar el APK de nuevo. Se quedo fijo en 1 durante toda una sesion
         // entera de cambios por descuido - bug real detectado antes de que llegara a afectar a
         // nadie que ya lo tuviera instalado.
-        versionCode = 3
+        versionCode = 4
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

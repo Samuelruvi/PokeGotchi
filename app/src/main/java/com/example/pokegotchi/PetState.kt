@@ -60,7 +60,17 @@ object PetState {
     // multiplicador, ver PERSONALITY_MULT_MAX) que deja el peor caso real en ~7/dia, sin cambiar
     // apenas la media poblacional (que ya rondaba el objetivo antes de este ajuste).
     private const val HAPPY_DAY = 4.725f;   private const val HAPPY_NIGHT = 1.89f
-    private const val HYGIENE_DAY = 1.43f;  private const val HYGIENE_NIGHT = 0.57f
+    // CUARTA VUELTA (pedido explicito del usuario: "que el lavado vaya de 0.75 lavados que hay
+    // ahora a 1.75"): subido x2.82 desde el valor original (1.43/0.57) - verificado con las 1083
+    // especies reales (mismo Simulador de Economia que el resto de rondas) que esto deja la MEDIA
+    // poblacional de lavados/dia en 1.75 (antes ~0.9), con el sesgo de etapa+edad de arriba ya
+    // puesto. Aviso real encontrado y aceptado explicitamente por el usuario: por el coste
+    // cruzado (lavar quita felicidad, ver sideEffectFor), el peor caso combinado (Onix) sube de
+    // ~7.08 a ~8.11 mimos/dia - supera el tope de ~7/dia que se habia validado antes (aquella vez
+    // por Iron Bundle) porque hacia falta mas mimo para compensar el lavado extra. El usuario
+    // decidio aceptar este nuevo peor caso (una unica especie ya conocida como extrema) en vez de
+    // suavizar el coste cruzado o quedarse cerca del ritmo anterior.
+    private const val HYGIENE_DAY = 4.03f;  private const val HYGIENE_NIGHT = 1.61f
 
 
     private val tz = java.util.TimeZone.getDefault()
@@ -1805,10 +1815,32 @@ object PetState {
     // las 3 - nunca se rompe del todo pase lo que pase. Bajado de x2 a x1.7 (a la vez que
     // HAPPY_DAY/NIGHT, ver arriba) tras ver en el Simulador de Economia que con el tope viejo
     // Iron Bundle (HP56/Vel136/Def114) pedia ~10.5 caricias/dia - con los dos ajustes juntos el
-    // peor caso real ronda ~7/dia.
-    private const val PERSONALITY_REF_STAT = 70f
+    // peor caso real ronda ~7/dia. Este rango de tope NO cambia con lo de abajo (misma seguridad
+    // ya validada, solo cambia CONTRA QUE se compara cada especie).
     private const val PERSONALITY_MULT_MIN = 0.5f
     private const val PERSONALITY_MULT_MAX = 1.7f
+
+    // SEGUNDA VUELTA (pedido explicito del usuario: "una primera etapa evolutiva no actua igual
+    // que una final"): antes se comparaba TODA especie contra una unica referencia global (70)
+    // para las 3 estadisticas - verificado con las 1083 especies reales que esto hacia que el 57%
+    // de las especies BASE (crias de verdad, sin contar formas de una sola etapa como Ditto/
+    // Tauros/legendarios - esas cuentan como "final", ver isFinalStage) compartieran EXACTAMENTE
+    // el mismo patron cualitativo (vida alta, felicidad y aseo bajos) - porque los Pokemon bebe
+    // tienen las 3 estadisticas bajas A LA VEZ frente al resto de la Pokedex, asi que todos caian
+    // del mismo lado sin importar la especie concreta. Con una referencia distinta por ETAPA
+    // evolutiva (promedio real de hp/velocidad/defensa dentro de cada etapa) ese porcentaje baja a
+    // 21.8% - ahora cada especie se compara contra sus iguales (otras crias, u otros adultos),
+    // asi que lo que sobresale es el perfil REAL de esa especie (Onix vs. Bulbasaur ya no son
+    // iguales solo por ser ambos "etapa base"), no simplemente el hecho de ser joven o adulta.
+    private const val PERSONALITY_REF_HP_BASE = 50f
+    private const val PERSONALITY_REF_SPEED_BASE = 51f
+    private const val PERSONALITY_REF_DEF_BASE = 52f
+    private const val PERSONALITY_REF_HP_MIDDLE = 65f
+    private const val PERSONALITY_REF_SPEED_MIDDLE = 60f
+    private const val PERSONALITY_REF_DEF_MIDDLE = 68f
+    private const val PERSONALITY_REF_HP_FINAL = 83f
+    private const val PERSONALITY_REF_SPEED_FINAL = 79f
+    private const val PERSONALITY_REF_DEF_FINAL = 86f
 
     @Volatile private var baseStatsTable: Map<String, Triple<Int, Int, Int>>? = null
 
@@ -1829,14 +1861,54 @@ object PetState {
 
     private fun clampPersonality(v: Float): Float = v.coerceIn(PERSONALITY_MULT_MIN, PERSONALITY_MULT_MAX)
 
-    /** Multiplicadores (vida, felicidad, higiene) para [name] segun sus estadisticas base reales -
-     *  1f,1f,1f si no hay datos para esa especie (no deberia pasar, pero por si acaso). */
+    /** Etapa evolutiva de [name] para elegir la referencia de personalidad: 2=final (sin mas
+     *  evoluciones - MISMO criterio que isFinalStage, incluye especies de una sola forma como
+     *  Ditto/Tauros/legendarios, y el caso "sin datos"), 0=base (evolvesFrom null pero SI
+     *  evoluciona mas - cria de verdad), 1=middle (el resto). */
+    private fun personalityStage(context: Context, name: String): Int {
+        if (isFinalStage(context, name)) return 2
+        return if (evolutionInfo(context, name)?.evolvesFrom == null) 0 else 1
+    }
+
+    // TERCERA VUELTA (pedido explicito del usuario, comparacion con personas: "los niños
+    // necesitan comer menos y mas caricias, cuando eres joven/mayor necesitas mas comida y menos
+    // caricias"): lo de arriba (comparar contra el promedio de la propia etapa) deja la etapa
+    // "neutra" por diseño - una especie con stats exactamente en el promedio de su etapa sale
+    // 1.0/1.0/1.0 pase lo que pase, asi que NO empuja en ninguna direccion consistente segun la
+    // edad, solo diferencia especies dentro de su misma etapa. Este sesgo añade ESO que faltaba:
+    // un empujon FIJO, igual para todas las especies de una etapa, que sube "comer" y baja
+    // "mimar" segun se crece (bebe come menos/pide mas mimo; joven Y adulto comen mas/piden
+    // menos mimo, sin volver a bajar en la vejez - pedido explicito). Verificado con las 1083
+    // especies reales que el patron queda consistente en cualquier cadena (comer sube y mimar
+    // baja SIEMPRE de base a final) y que el peor caso combinado se queda en ~7.1/dia (Onix),
+    // pegado al ~7/dia ya validado antes - no reabre el problema de exceso de caricias/dia.
+    // No toca higiene (ver aparte, ritmo base ya pedido explicitamente por el usuario en otra
+    // ronda: comer 3x/lavar 1x, no es lo mismo que esto).
+    private const val AGE_BIAS_FEED_BASE = 0.80f;   private const val AGE_BIAS_PET_BASE = 1.25f
+    private const val AGE_BIAS_FEED_MIDDLE = 1.10f; private const val AGE_BIAS_PET_MIDDLE = 0.90f
+    private const val AGE_BIAS_FEED_FINAL = 1.15f;  private const val AGE_BIAS_PET_FINAL = 0.85f
+
+    /** Multiplicadores (vida, felicidad, higiene) para [name] segun sus estadisticas base reales,
+     *  comparadas contra el promedio real de su PROPIA etapa evolutiva (ver personalityStage), y
+     *  con el sesgo de edad de arriba ya aplicado a vida/felicidad - 1f,1f,1f si no hay datos
+     *  para esa especie (no deberia pasar, pero por si acaso). */
     fun personalityMultipliers(context: Context, name: String): Triple<Float, Float, Float> {
         val stats = loadBaseStatsTable(context)[name.lowercase()] ?: return Triple(1f, 1f, 1f)
         val (hp, speed, defense) = stats
-        val mHealth = clampPersonality(PERSONALITY_REF_STAT / hp)
-        val mHappy = clampPersonality(speed / PERSONALITY_REF_STAT)
-        val mHygiene = clampPersonality(defense / PERSONALITY_REF_STAT)
+        val stage = personalityStage(context, name)
+        val (refHp, refSpeed, refDef) = when (stage) {
+            0 -> Triple(PERSONALITY_REF_HP_BASE, PERSONALITY_REF_SPEED_BASE, PERSONALITY_REF_DEF_BASE)
+            1 -> Triple(PERSONALITY_REF_HP_MIDDLE, PERSONALITY_REF_SPEED_MIDDLE, PERSONALITY_REF_DEF_MIDDLE)
+            else -> Triple(PERSONALITY_REF_HP_FINAL, PERSONALITY_REF_SPEED_FINAL, PERSONALITY_REF_DEF_FINAL)
+        }
+        val (feedBias, petBias) = when (stage) {
+            0 -> AGE_BIAS_FEED_BASE to AGE_BIAS_PET_BASE
+            1 -> AGE_BIAS_FEED_MIDDLE to AGE_BIAS_PET_MIDDLE
+            else -> AGE_BIAS_FEED_FINAL to AGE_BIAS_PET_FINAL
+        }
+        val mHealth = clampPersonality((refHp / hp) * feedBias)
+        val mHappy = clampPersonality((speed / refSpeed) * petBias)
+        val mHygiene = clampPersonality(defense / refDef)
         return Triple(mHealth, mHappy, mHygiene)
     }
 
