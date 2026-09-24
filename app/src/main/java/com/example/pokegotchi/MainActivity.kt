@@ -19,6 +19,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -1292,6 +1293,18 @@ class MainActivity : AppCompatActivity() {
     private fun setFilterMode(mode: String) {
         if (filterMode == mode) return
         filterMode = mode
+        // Clear search when switching sections
+        val searchView = findViewById<EditText>(R.id.search_dex)
+        if (searchView.text.toString().isNotEmpty()) {
+            searchView.setText("")
+            searchQuery = ""
+        }
+        // Cerrar el buscador y el teclado al cambiar de pestaña (Mis Pokemon/Favoritos/Pokedex) -
+        // pedido explicito del usuario: antes solo se vaciaba el texto, pero si se cambiaba de
+        // pestaña justo mientras se escribia, el foco y el teclado se quedaban abiertos.
+        searchView.clearFocus()
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
+            .hideSoftInputFromWindow(searchView.windowToken, 0)
         refreshRows()
         updateFilterTabs()
         adapter.notifyDataSetChanged()
