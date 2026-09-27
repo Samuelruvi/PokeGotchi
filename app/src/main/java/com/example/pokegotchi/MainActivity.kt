@@ -1250,6 +1250,17 @@ class MainActivity : AppCompatActivity() {
         (PetState.hasIndividual(this, name, false) && !PetState.hasEvolvedAway(this, name, false) && PetState.isFavorite(this, name, false)) ||
             (PetState.hasIndividual(this, name, true) && !PetState.hasEvolvedAway(this, name, true) && PetState.isFavorite(this, name, true))
 
+    /** ¿Tiene [name] al menos un individuo (normal/shiny) que siga siendo ESA forma ahora mismo
+     *  (no evolucionado ya hacia otra cosa)? Pedido explicito del usuario: "quitar las
+     *  evoluciones de la vista de mis pokemon" - antes "Mis Pokemon" enseñaba tambien cada
+     *  etapa ya evolucionada (Treecko Y Grovyle Y Sceptile a la vez, aunque solo tengas el
+     *  ultimo), mismo criterio ya usado en isFavoriteSpecies para representar la linea por su
+     *  forma actual, no por cada etapa antigua. La Pokedex completa (sin filtrar) no se toca -
+     *  ahi si tiene sentido ver el historial de toda la cadena. */
+    private fun isCurrentlyOwnedSpecies(name: String): Boolean =
+        (PetState.hasIndividual(this, name, false) && !PetState.hasEvolvedAway(this, name, false)) ||
+            (PetState.hasIndividual(this, name, true) && !PetState.hasEvolvedAway(this, name, true))
+
     /** Recalcula [rows] segun el modo activo: "Mis Pokemon" (solo desbloqueados, todas las
      *  generaciones juntas), "Favoritos" (solo los marcados, ver isFavoriteSpecies) o "Pokedex
      *  completa" (solo [currentGen], como siempre); y segun [sortBy]: por numero de Pokedex, o
@@ -1258,7 +1269,7 @@ class MainActivity : AppCompatActivity() {
      *  favoritos normalmente son pocos, no hace falta filtrar mas). */
     private fun refreshRows() {
         var base = when (filterMode) {
-            FILTER_MINE -> allMons.filter { PetState.isUnlocked(this, it.name) }
+            FILTER_MINE -> allMons.filter { isCurrentlyOwnedSpecies(it.name) }
             FILTER_FAVORITES -> allMons.filter { isFavoriteSpecies(it.name) }
             else -> if (currentGen == 0) allMons else allMons.filter { it.gen == currentGen }
         }
@@ -3074,7 +3085,9 @@ class MainActivity : AppCompatActivity() {
         root.addView(TextView(this).apply {
             text = "🧬 Personalidad: $personalidadTexto"
             textSize = 11.5f
-            setTextColor(Color.parseColor("#666666"))
+            // Blanco (antes gris #666666) - pedido explicito del usuario: "los textos de
+            // informacion... estan en un gris y no se lee bien".
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             setPadding(0, dp(2), 0, dp(6))
@@ -3088,7 +3101,7 @@ class MainActivity : AppCompatActivity() {
             text = "🐛 ≈%.1f comidas/día (x%.2f) · ≈%.1f caricias/día (x%.2f) · ≈%.1f lavados/día (x%.2f)"
                 .format(est.feed, mHealth, est.pet, mHappy, est.wash, mHygiene)
             textSize = 10.5f
-            setTextColor(Color.parseColor("#888888"))
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             setPadding(0, 0, 0, dp(6))
@@ -3267,7 +3280,7 @@ class MainActivity : AppCompatActivity() {
             root.addView(TextView(this).apply {
                 text = "⏱️ ${formatCareHours(PetState.careHours(this@MainActivity, mon.name, viewShiny))} cuidándolo"
                 textSize = 11.5f
-                setTextColor(Color.parseColor("#666666"))
+                setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 setPadding(0, 0, 0, dp(4))

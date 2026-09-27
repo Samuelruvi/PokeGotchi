@@ -575,6 +575,15 @@ object PetState {
             // y AHORA independiente por variante (un Snivy shiny y uno normal pueden tener sexos
             // distintos, son individuos distintos de verdad).
             if (base in GENDER_SPECIES) e.putString(k(n, KEY_GENDER), rollGender(base))
+            // Bug real reportado por el usuario ("me aparece que tengo desbloqueados los dos
+            // generos de Shinx cuando no los tengo"): mechanic_forms_seen (vitrina de genero/forma,
+            // ver mechanicShowcase) es un registro ADITIVO que nunca se borraba - si esta especie ya
+            // habia evolucionado antes (o el individuo se re-crea "fresco" por cualquier otro
+            // motivo) y el nuevo sorteo de genero da uno DISTINTO al del individuo anterior, los dos
+            // se quedaban marcados como "vistos" para siempre, aunque nunca hayan coexistido de
+            // verdad. Un individuo fresco no ha visto ninguna de sus formas todavia - se limpia
+            // aqui para que la vitrina reflede solo la historia de ESTE individuo en adelante.
+            e.remove(k(base, KEY_MECHANIC_SEEN))
         }
         e.putLong(k(n, KEY_LAST), System.currentTimeMillis())  // reinicia el reloj
         e.apply()
@@ -991,6 +1000,8 @@ object PetState {
             .putFloat(k(n, KEY_XP), 0f)
             .putLong(k(n, KEY_LAST), System.currentTimeMillis())
         if (base in GENDER_SPECIES) e.putString(k(n, KEY_GENDER), rollGender(base))
+        // Mismo motivo que en setPokemon - individuo fresco, historial de formas vistas a cero.
+        e.remove(k(base, KEY_MECHANIC_SEEN))
         e.commit()
     }
 
@@ -3315,6 +3326,18 @@ object PetState {
 
     fun mechanicFormsSeen(context: Context, name: String): Set<String> =
         prefs(context).getStringSet(k(name, KEY_MECHANIC_SEEN), emptySet()) ?: emptySet()
+
+    /** SOLO PARA PRUEBAS (broadcast de debug): repara un mechanic_forms_seen ya corrupto de ANTES
+     *  del arreglo de arriba (setPokemon/rollFreshIndividual ahora lo limpian ellos solos en un
+     *  individuo fresco) - pedido explicito del usuario tras reportar "tengo desbloqueados los dos
+     *  generos de Shinx cuando no los tengo". Deja SOLO [keep] en el registro (o lo vacia del todo
+     *  si [keep] es null). */
+    fun repairMechanicFormsSeen(context: Context, name: String, keep: String?) {
+        val key = k(name.lowercase(), KEY_MECHANIC_SEEN)
+        val edit = prefs(context).edit()
+        if (keep != null) edit.putStringSet(key, setOf(keep)) else edit.remove(key)
+        edit.commit()
+    }
 
     // Titulos oficiales de la habilidad real que causa la mecanica (verificados en WikiDex) para
     // las especies decorativas SIN un branch propio mas abajo - el resto (Necrozma, Gourgeist,

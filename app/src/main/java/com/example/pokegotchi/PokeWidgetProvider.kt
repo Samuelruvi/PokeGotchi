@@ -89,6 +89,13 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR --ef hours_ago 2
         const val ACTION_DEBUG_REPAIR_OFFER_ANCHOR = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR"
+        // SOLO PARA PRUEBAS (disparado a mano por adb): repara un mechanic_forms_seen ya corrupto
+        // de una especie (ver PetState.repairMechanicFormsSeen) - pedido explicito del usuario tras
+        // "tengo desbloqueados los dos generos de Shinx cuando no los tengo". Extra "name"
+        // (obligatorio), "keep" (opcional - spriteKey a conservar, vacio el registro si se omite).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_REPAIR_MECHANIC_SEEN --es name shinx --es keep shinx-female
+        const val ACTION_DEBUG_REPAIR_MECHANIC_SEEN = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_MECHANIC_SEEN"
 
         // Refresco periodico del decaimiento.
         private const val TICK_INTERVAL_MS = 15 * 60 * 1000L
@@ -406,6 +413,14 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 PetState.repairOfferAnchor(context, hoursAgo)
                 dbg(context, "regalo: ancla de ciclo reparada por debug (hoursAgo=$hoursAgo)")
                 renderAll(context, mgr)
+            }
+            ACTION_DEBUG_REPAIR_MECHANIC_SEEN -> {
+                val name = intent.getStringExtra("name")
+                if (name != null) {
+                    val keep = intent.getStringExtra("keep")
+                    PetState.repairMechanicFormsSeen(context, name, keep)
+                    dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
+                }
             }
             ACTION_DEBUG_DUMP_ASSETS -> {
                 // SOLO PARA PRUEBAS: vuelca a ficheros PNG los bitmaps REALES del huevo (fase 0)
