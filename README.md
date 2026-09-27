@@ -23,6 +23,23 @@ afiliación con ellos y no se distribuye con fines comerciales.
 - Pokédex completa con formas regionales (Alola/Galar/Hisui/Paldea) y sprites propios,
   animados, en estilo pixel art.
 - Sistema de huevos, fondos desbloqueables y ciclo día/noche.
+- **Mazmorra**: manda a cualquiera de tus Pokémon a explorar hasta 100 pisos procedurales,
+  luchar contra enemigos salvajes y jefes, y encontrar caramelos de experiencia y objetos de
+  curación — sigue avanzando sola incluso con la app cerrada, con modo continuo (encadena
+  carreras automáticamente) y un cierre temporal entre carreras para poder descansar o
+  cambiar de explorador.
+
+## Mazmorra
+
+<img src="docs/dungeon-screenshot.png" alt="Selector de Pokémon para la mazmorra" width="360">
+
+Se abre desde el icono 🗺️ de la cabecera principal. El Pokémon que mandes explora piso a
+piso de forma automática (con animación en vivo si tienes la pantalla abierta, o en
+segundo plano mediante un servicio propio si no), luchando y recogiendo objetos; la
+dificultad y las recompensas escalan con la profundidad alcanzada. Al terminar una carrera
+(por derrota o al completar los 100 pisos) la mazmorra cierra durante un tiempo proporcional
+a lo lejos que se llegó, tras el cual puedes elegir quién entra a continuación o dejar que
+el modo continuo repita automáticamente con el mismo Pokémon.
 
 ## Requisitos
 

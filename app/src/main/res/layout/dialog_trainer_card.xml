@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tarjeta de entrenador (ver MainActivity.showTrainerCardDialog) - pedido explicito del
+     usuario: nombre arriba, nivel CON barra justo debajo, luego el escenario (fondo real del
+     tipo del Pokemon favorito, ver PetState.suggestedBackgrounds) con el entrenador y el
+     favorito, y el contador de Pokedex CON barra debajo. El boton de fondos vive aqui (ya no en
+     el menu ⋮) y dice cuantos hay por desbloquear. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+    <LinearLayout
+        android:id="@+id/card_content_root"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/card_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <!-- Nivel de entrenador, justo debajo del nombre (pedido explicito del usuario). -->
+        <TextView
+            android:id="@+id/card_level"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+        <ProgressBar
+            android:id="@+id/card_level_bar"
+            style="@android:style/Widget.ProgressBar.Horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="4dp"
+            android:max="1000" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="200dp"
+            android:layout_marginTop="14dp">
+            <!-- Escenario: el fondo REAL del tipo del favorito (variable, fijado en codigo -
+                 SpriteRepository/PetState.suggestedBackgrounds), con el marco por encima. -->
+            <ImageView
+                android:id="@+id/card_stage_bg"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerCrop"
+                android:contentDescription="@null" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/border_trainer_card" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal|bottom"
+                android:layout_marginBottom="10dp"
+                android:orientation="horizontal"
+                android:gravity="bottom">
+
+                <!-- Retrato del entrenador: tocar -> editar nombre/avatar. -->
+                <FrameLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content">
+                    <ImageView
+                        android:id="@+id/card_trainer_portrait"
+                        android:layout_width="150dp"
+                        android:layout_height="150dp"
+                        android:scaleType="fitCenter"
+                        android:contentDescription="@null" />
+                    <TextView
+                        android:id="@+id/card_pencil_icon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="top|end"
+                        android:text="✏️"
+                        android:textSize="16sp" />
+                </FrameLayout>
+
+                <!-- Pokemon favorito destacado: tocar -> elegir. layout_height real fijado en
+                     codigo segun el alto de lienzo del sprite (ver
+                     SpriteRepository.localCanvasHeight) - adjustViewBounds deriva el ancho
+                     manteniendo la proporcion real del sprite. -->
+                <FrameLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp">
+                    <ImageView
+                        android:id="@+id/card_favorite_pokemon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="130dp"
+                        android:adjustViewBounds="true"
+                        android:scaleType="fitCenter"
+                        android:contentDescription="@null" />
+                    <TextView
+                        android:id="@+id/card_favorite_hint"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="top|end"
+                        android:text="♡"
+                        android:textSize="20sp"
+                        android:textColor="#EE1515" />
+                </FrameLayout>
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- Pokedex: poseidos / tope (porcentaje), con su propia barra. -->
+        <TextView
+            android:id="@+id/card_dex_count"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+        <ProgressBar
+            android:id="@+id/card_dex_bar"
+            style="@android:style/Widget.ProgressBar.Horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="4dp"
+            android:max="1000" />
+
+        <!-- Fondos: ahora vive aqui (antes en el menu ⋮), y deja claro cuantos hay por
+             desbloquear - pedido explicito del usuario. Texto real fijado en codigo. -->
+        <Button
+            android:id="@+id/card_bg_shortcut"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="🖼️ Fondos" />
+
+        <!-- Pokedex de objetos de la mazmorra: pedido explicito del usuario, "que aparezcan en
+             la ficha del entrenador debajo, como si fuera una pokedex de objetos". Texto real
+             (cuenta X/129) fijado en codigo. -->
+        <Button
+            android:id="@+id/card_items_shortcut"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="🎒 Objetos" />
+    </LinearLayout>
+</ScrollView>

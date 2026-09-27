@@ -793,27 +793,44 @@ object PetState {
      *  despues de sumar SOLO el ACTION_XP de esta pulsada, no desde la ultima vez que se miró. */
     data class ActionResult(val applied: Boolean, val leveledUp: Boolean)
 
+    // Cerrojo compartido para el patron leer-sumar-escribir de las stats de un individuo (XP
+    // sobre todo) - pedido explicito del usuario al auditar si la mazmorra podia aplicar XP real
+    // (DungeonSimulator.APPLY_REAL_CANDY_XP): sin esto, dar de comer/acariciar/lavar al compañero
+    // activo (aqui) Y que la mazmorra le otorgue XP real (grantXpToIndividual) A LA VEZ - si el
+    // explorador es el MISMO individuo que el compañero activo, algo que el propio diseño permite
+    // explicitamente - podian pisarse: los dos leen el XP viejo, cada uno suma el suyo, el que
+    // escribe el segundo tira el primero (lost update clasico, sin ningun aviso). El caso real mas
+    // probable: catchUpIfStalled corriendo en su PROPIO hilo de fondo justo cuando el jugador abre
+    // la app y le da de comer al mismo Pokemon que esta explorando. Un Object simple (no hace
+    // falta reentrancia) protegido con synchronized en los dos sitios que hacen ese patron.
+    private val statsWriteLock = Any()
+
     fun tryApplyAction(context: Context, action: String): ActionResult {
-        val s = loadWithDecay(context)
-        if (!isNeeded(context, s, action)) return ActionResult(false, false)
-        val levelBefore = levelOf(context, s.xp, currentPokemon(context))
-        when (action) {
-            PokeWidgetProvider.ACTION_FEED -> s.health = (s.health + BOOST_HEALTH).coerceIn(0f, 100f)
-            PokeWidgetProvider.ACTION_PET -> s.happiness = (s.happiness + BOOST_HAPPY).coerceIn(0f, 100f)
-            PokeWidgetProvider.ACTION_WASH -> s.hygiene = (s.hygiene + BOOST_HYGIENE).coerceIn(0f, 100f)
+        var result: ActionResult
+        synchronized(statsWriteLock) {
+            val s = loadWithDecay(context)
+            if (!isNeeded(context, s, action)) { result = ActionResult(false, false); return@synchronized }
+            val levelBefore = levelOf(context, s.xp, currentPokemon(context))
+            when (action) {
+                PokeWidgetProvider.ACTION_FEED -> s.health = (s.health + BOOST_HEALTH).coerceIn(0f, 100f)
+                PokeWidgetProvider.ACTION_PET -> s.happiness = (s.happiness + BOOST_HAPPY).coerceIn(0f, 100f)
+                PokeWidgetProvider.ACTION_WASH -> s.hygiene = (s.hygiene + BOOST_HYGIENE).coerceIn(0f, 100f)
+            }
+            val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, currentPokemon(context))
+            sideEffectFor(action, mHealth, mHappy, mHygiene)?.invoke(s)
+            s.xp += ACTION_XP * xpMultiplier(context, currentPokemon(context))
+            val leveledUp = levelOf(context, s.xp, currentPokemon(context)) > levelBefore
+            // durable=true (commit sincrono): esta escritura tiene que estar en disco YA al volver
+            // de onReceive. Con apply() (asincrono) existia una rendija teorica: si MIUI mata el
+            // proceso justo despues de pulsar un boton (antes de que el disco recibiera la
+            // escritura), una pulsacion posterior en un proceso NUEVO podia leer el estado VIEJO
+            // (sin el boost aplicado) y volver a aceptar una accion que ya se habia satisfecho,
+            // pareciendo una animacion "encolada". MIUI es conocido por matar procesos en segundo
+            // plano de forma agresiva, asi que esto es una hipotesis real, no solo teorica.
+            save(context, s, System.currentTimeMillis(), durable = true)
+            result = ActionResult(true, leveledUp)
         }
-        val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, currentPokemon(context))
-        sideEffectFor(action, mHealth, mHappy, mHygiene)?.invoke(s)
-        s.xp += ACTION_XP * xpMultiplier(context, currentPokemon(context))
-        val leveledUp = levelOf(context, s.xp, currentPokemon(context)) > levelBefore
-        // durable=true (commit sincrono): esta escritura tiene que estar en disco YA al volver
-        // de onReceive. Con apply() (asincrono) existia una rendija teorica: si MIUI mata el
-        // proceso justo despues de pulsar un boton (antes de que el disco recibiera la
-        // escritura), una pulsacion posterior en un proceso NUEVO podia leer el estado VIEJO
-        // (sin el boost aplicado) y volver a aceptar una accion que ya se habia satisfecho,
-        // pareciendo una animacion "encolada". MIUI es conocido por matar procesos en segundo
-        // plano de forma agresiva, asi que esto es una hipotesis real, no solo teorica.
-        save(context, s, System.currentTimeMillis(), durable = true)
+        if (!result.applied) return result
         // Nuevo "ciclo de necesidad" para esta stat: se sortea un umbral fresco (no siempre el
         // mismo) para la proxima vez, ANTES de que vuelva a hacer falta.
         thresholdKeyFor(action)?.let { rerollThreshold(context, currentPokemon(context), it) }
@@ -826,7 +843,7 @@ object PetState {
         if (currentPokemon(context) == "solgaleo" || currentPokemon(context) == "lunala") {
             triggerRadiantPhase(context, currentPokemon(context))
         }
-        return ActionResult(true, leveledUp)
+        return result
     }
 
     fun setReaction(context: Context, emote: String, durationMs: Long) {
@@ -933,6 +950,23 @@ object PetState {
             .putFloat(k(n, KEY_XP), (xp ?: current.xp).coerceAtLeast(0f))
             .putLong(k(n, KEY_LAST), System.currentTimeMillis())
             .commit()
+    }
+
+    /** Suma [amount] de XP real y permanente a un individuo cualquiera (no hace falta que sea el
+     *  activo del widget principal) - usado por la mazmorra al consumir un caramelo encontrado
+     *  explorando. NO toca health/hygiene/happiness (la vida EN LA MAZMORRA es un concepto aparte,
+     *  ver DungeonState) - parte de rawStats (congeladas, sin decaimiento, igual que
+     *  debugSetIndividualStats) en vez de loadWithDecay. Devuelve el nivel resultante. */
+    fun grantXpToIndividual(context: Context, name: String, shiny: Boolean, amount: Float): Int = synchronized(statsWriteLock) {
+        val base = name.lowercase()
+        val n = slot(base, shiny)
+        val current = rawStats(context, base, shiny) ?: Stats(75f, 75f, 75f, 0f)
+        val newXp = (current.xp + amount).coerceAtLeast(0f)
+        prefs(context).edit()
+            .putFloat(k(n, KEY_XP), newXp)
+            .putLong(k(n, KEY_LAST), System.currentTimeMillis())
+            .commit()
+        levelOf(context, newXp, base)
     }
 
     /** Crea el individuo [shiny] de [name] con datos iniciales (nivel 1, barras 50-100 al azar
@@ -1400,6 +1434,35 @@ object PetState {
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
     }
 
+    /** DEBUG: fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 24h/48h -
+     *  pedido explicito del usuario tras descartar sin querer un regalo real ("dame un regalo que
+     *  le he dado a descartar sin querer"). Ancla el ciclo a "hace exactamente OFFER_INTERVAL_HOURS"
+     *  (en vez de a 0L, que es un timestamp de 1970 - bug real que causó: al elegir/descartar esta
+     *  oferta forzada, offerAppearedAt() = 0 + 24h leía un ancla corrupta clavada en el pasado, y
+     *  offerCooldownRemainingMs devolvia 0 para siempre - el icono de regalo con el timer
+     *  desaparecia sin mas, reportado por el usuario: "he recogido el regalo y ha desaparecido el
+     *  icono de regalo con el timer") para que [maybeGenerateOffer] genere una de inmediato SIN
+     *  dejar un ancla sin sentido para el ciclo siguiente. Solo se llama desde el broadcast de
+     *  debug (ver PokeWidgetProvider.ACTION_DEBUG_FORCE_OFFER), nunca desde la UI normal. */
+    fun forceNewOffer(context: Context) {
+        val fakeLast = System.currentTimeMillis() - (OFFER_INTERVAL_HOURS * 3_600_000f).toLong()
+        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, fakeLast).commit()
+        maybeGenerateOffer(context)
+    }
+
+    /** DEBUG: repara un ancla de ciclo corrupta (ver comentario de [forceNewOffer] de arriba) -
+     *  la reinicia desde AHORA MISMO, dando un ciclo completo de OFFER_INTERVAL_HOURS hasta el
+     *  siguiente regalo, exactamente lo que deberia haber pasado al elegir/descartar el regalo
+     *  real si el ancla no hubiera estado ya corrupta. [hoursAgo] (0f por defecto = justo ahora)
+     *  permite fijarla como si el ciclo ya llevara corriendo esas horas - pedido explicito del
+     *  usuario para devolver el timer al valor que tenia antes del incidente completo ("bajamelo a
+     *  22h que es como estaba antes": 24h - 22h = 2h ya transcurridas). Solo se llama desde el
+     *  broadcast de debug (ver PokeWidgetProvider.ACTION_DEBUG_REPAIR_OFFER_ANCHOR). */
+    fun repairOfferAnchor(context: Context, hoursAgo: Float = 0f) {
+        val anchor = System.currentTimeMillis() - (hoursAgo * 3_600_000f).toLong()
+        prefs(context).edit().putLong(KEY_OFFER_LAST, anchor).commit()
+    }
+
     // ==================== NOTIFICACIONES (base) ====================
     // Evita machacar al jugador con la misma notificacion cada 15 min mientras la condicion
     // siga activa: se marca "ya avisado" al notificar, y SOLO se limpia cuando la condicion deja
@@ -1732,13 +1795,13 @@ object PetState {
      *  puesta. No-op solo si de verdad no existe ningun individuo de esa especie (no deberia
      *  pasar: el padre no se borra al poner un huevo, solo deja de ser el activo si luego se
      *  acepta la cria). */
-    private fun awardEggHatchXpToParent(context: Context) {
-        val parent = eggParent(context) ?: return
+    private fun awardEggHatchXpToParent(context: Context) = synchronized(statsWriteLock) {
+        val parent = eggParent(context) ?: return@synchronized
         val p = prefs(context)
         val base = parent.lowercase()
         val recordedShiny = p.getBoolean(KEY_EGG_PARENT_SHINY, false)
         val n = listOf(slot(base, recordedShiny), slot(base, !recordedShiny))
-            .firstOrNull { p.contains(k(it, KEY_XP)) } ?: return
+            .firstOrNull { p.contains(k(it, KEY_XP)) } ?: return@synchronized
         val xp = try {
             p.getFloat(k(n, KEY_XP), 0f)
         } catch (e: ClassCastException) {
@@ -3040,6 +3103,78 @@ object PetState {
         val a = cumXpTrainer(lvl); val b = cumXpTrainer(lvl + 1)
         return if (b > a) ((pool - a) / (b - a)).coerceIn(0f, 1f) else 0f
     }
+
+    // ==================== FICHA DE ENTRENADOR ====================
+    // Nickname + retrato (elegido entre assets/trainers/*.png, ver TrainerSprites) + un Pokemon
+    // favorito destacado (elegido de entre los que ya cuentan como favoritos de verdad, ver
+    // isFavoriteSpecies en MainActivity - misma condicion centralizada aqui). Pedido explicito
+    // del usuario: nickname se pide en el primer arranque (antes de elegir inicial) y se puede
+    // cambiar cuando sea; el favorito destacado permite elegir tambien la forma exacta ya vista
+    // (mega/genero/formas) via speciesMechanics, no solo la especie+shiny.
+    private const val KEY_TRAINER_NAME = "trainer_name"
+    private const val KEY_TRAINER_SPRITE = "trainer_sprite"
+    private const val KEY_SHOWCASE_MON = "showcase_mon"
+    private const val KEY_SHOWCASE_SHINY = "showcase_shiny"
+    private const val KEY_SHOWCASE_FORM = "showcase_form"      // spriteKey de MechanicForm, "" = forma base
+    const val DEFAULT_TRAINER_SPRITE = "CHICO"                 // existe en assets/trainers
+
+    /** true una vez el jugador ya puso su nickname - gate de primer arranque (ver
+     *  TrainerSetupActivity), igual de auto-suficiente que hasChosenStarter/KEY_STARTER_DONE. */
+    fun hasTrainerProfile(context: Context): Boolean = trainerName(context).isNotEmpty()
+
+    fun trainerName(context: Context): String = prefs(context).getString(KEY_TRAINER_NAME, "") ?: ""
+
+    /** commit (no apply): el gate de arranque en MainActivity.onCreate lee esto en el mismo
+     *  instante tras guardarlo (ver TrainerSetupActivity), no puede arriesgarse a una lectura
+     *  desactualizada por una escritura asincrona aun en vuelo. */
+    fun setTrainerName(context: Context, name: String) =
+        prefs(context).edit().putString(KEY_TRAINER_NAME, name.trim()).commit()
+
+    fun trainerSprite(context: Context): String =
+        prefs(context).getString(KEY_TRAINER_SPRITE, DEFAULT_TRAINER_SPRITE) ?: DEFAULT_TRAINER_SPRITE
+
+    fun setTrainerSprite(context: Context, key: String) =
+        prefs(context).edit().putString(KEY_TRAINER_SPRITE, key).apply()
+
+    /** Especies+shiny que cuentan como favoritas AHORA MISMO - misma condicion exacta que
+     *  MainActivity.isFavoriteSpecies (individuo existe, no evoluciono ya lejos de esta forma, y
+     *  esta marcado favorito), centralizada aqui para que la use tambien el selector de favorito
+     *  destacado de la ficha de entrenador. */
+    fun favoriteIndividuals(context: Context): List<Pair<String, Boolean>> =
+        loadEvoTable(context).keys.flatMap { name ->
+            listOf(false, true).filter { shiny ->
+                hasIndividual(context, name, shiny) && !hasEvolvedAway(context, name, shiny) && isFavorite(context, name, shiny)
+            }.map { shiny -> name to shiny }
+        }
+
+    /** Todos los individuos (especie+shiny) que el jugador posee de verdad ahora mismo - mismo
+     *  criterio que favoriteIndividuals pero SIN el filtro de favorito, para el selector "que
+     *  Pokemon mandar a la mazmorra" (cualquiera ya tuyo, no solo los marcados favoritos). */
+    fun ownedIndividuals(context: Context): List<Pair<String, Boolean>> =
+        loadEvoTable(context).keys.flatMap { name ->
+            listOf(false, true).filter { shiny ->
+                hasIndividual(context, name, shiny) && !hasEvolvedAway(context, name, shiny)
+            }.map { shiny -> name to shiny }
+        }
+
+    /** Favorito destacado elegido para la ficha, o null si no se ha elegido ninguno todavia o el
+     *  guardado ya no es valido (se dejo de marcar favorito, o evoluciono lejos de esa forma) -
+     *  se revalida contra favoriteIndividuals() en cada lectura, nunca se muestra un favorito
+     *  "fantasma" que ya no existe de verdad. */
+    fun showcaseFavorite(context: Context): Triple<String, Boolean, String>? {
+        val name = prefs(context).getString(KEY_SHOWCASE_MON, "") ?: ""
+        if (name.isEmpty()) return null
+        val shiny = prefs(context).getBoolean(KEY_SHOWCASE_SHINY, false)
+        if ((name to shiny) !in favoriteIndividuals(context)) return null
+        return Triple(name, shiny, prefs(context).getString(KEY_SHOWCASE_FORM, "") ?: "")
+    }
+
+    fun setShowcaseFavorite(context: Context, name: String, shiny: Boolean, form: String) =
+        prefs(context).edit()
+            .putString(KEY_SHOWCASE_MON, name)
+            .putBoolean(KEY_SHOWCASE_SHINY, shiny)
+            .putString(KEY_SHOWCASE_FORM, form)
+            .apply()
 
     // ==================== NOMBRES EN ESPAÑOL: Pokemon Paradoja ====================
     // El nombre interno (name en pokedex.json) es el ingles con guiones (ej. "great-tusk") - se

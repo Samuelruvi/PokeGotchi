@@ -290,6 +290,27 @@ object SpriteRepository {
         }
     }
 
+    /** Alto REAL del lienzo (h) del strip local de [name] - cada fotograma es cuadrado de lado h
+     *  (ver contentCropRect/localFirstFrame), y ese h varia de verdad segun la especie (medido:
+     *  Pikachu h=50, Absol h=65, Sceptile h=73, Charizard h=91, Wailord h=103) - proxy razonable
+     *  de "que tan grande se dibuja" cada especie en el pack Gen5 (NO usar el resultado YA
+     *  escalado de localFirstFrameScaled para esto: effectiveScale ajusta el multiplicador segun
+     *  un presupuesto de memoria, no segun el tamaño real - un sprite con lienzo nativo mas
+     *  grande puede acabar con un multiplicador MENOR y verse mas pequeño que uno chico, justo al
+     *  reves de lo que se busca aqui). Solo lee las dimensiones del PNG (inJustDecodeBounds), no
+     *  decodifica los pixeles - barato de llamar. null si esa especie no esta en el paquete local. */
+    fun localCanvasHeight(context: Context, name: String, shiny: Boolean = false): Int? {
+        val folder = if (shiny) "shiny" else "normal"
+        val path = "localsprites/$folder/${name.lowercase()}.png"
+        return try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.assets.open(path).use { BitmapFactory.decodeStream(it, null, opts) }
+            opts.outHeight.takeIf { it > 0 }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Igual que [localFirstFrame], pero ya escalada segun el modo de suavizado elegido por el
      *  usuario (mismo algoritmo Scale2x que el sprite animado - ver scaledFrame) - antes estas
      *  miniaturas (Pokedex, Mis Pokemon, dialogos de oferta/evolucion) se dejaban a resolucion

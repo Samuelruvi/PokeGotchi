@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.widget.FrameLayout
+import android.widget.TextView
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -681,5 +683,65 @@ object EffectGenerator {
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(pixels, 0, w, 0, 0, w, h)
         return out
+    }
+
+    // Movido aqui desde MainActivity (era privado, solo lo usaba la revelacion del huevo shiny) -
+    // TrainerSetupActivity tambien lo necesita para el paso shiny del tutorial ("faltan las
+    // estrellitas del shiny", pedido explicito del usuario), asi que pasa a ser compartido en vez
+    // de duplicar las ~30 lineas de animacion. Sin estado ni dependencias de ninguna Activity en
+    // concreto - solo Context para construir las vistas.
+    private const val SPARKLE_TAG = "effect_sparkle"
+
+    /** Añade 6 estrellitas ✨ en posiciones fijas relativas a [container] (tamaño real w×h en
+     *  pixeles) y las deja parpadeando en bucle mientras sigan enganchadas a la ventana - llamar
+     *  [clearSparkles] para quitarlas cuando ya no tocan (si no, siguen animando para siempre). */
+    fun playShinySparkles(context: Context, container: FrameLayout, w: Int, h: Int) {
+        // Varias posiciones caen fuera de 0..w/0..h a proposito (justo por el borde, o del todo
+        // fuera como el 0.42/-0.08 de arriba) para que las estrellas parezcan rodear al Pokemon en
+        // vez de quedar todas metidas dentro de su caja - sin esto, el recorte por defecto del
+        // contenedor se comia el trozo que sobresalia (bug real reportado: "algunas estrellas
+        // estan cortadas arriba, abajo, a la izquierda y a la derecha").
+        container.clipChildren = false
+        container.clipToPadding = false
+        val positions = listOf(
+            0.02f to 0.02f, 0.88f to 0.08f, 0.05f to 0.72f,
+            0.90f to 0.68f, 0.42f to -0.08f, 0.48f to 0.85f
+        )
+        positions.forEachIndexed { i, (fx, fy) ->
+            val star = TextView(context).apply {
+                text = "✨"
+                textSize = 18f
+                alpha = 0f
+                tag = SPARKLE_TAG
+                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                    leftMargin = (w * fx).toInt()
+                    topMargin = (h * fy).toInt()
+                }
+            }
+            container.addView(star)
+            star.postDelayed({ sparkleLoop(star) }, i * 180L)
+        }
+    }
+
+    /** Quita todas las estrellitas que [playShinySparkles] haya añadido a [container] - sin esto
+     *  se quedarian parpadeando para siempre encima de los siguientes pasos/pantallas. */
+    fun clearSparkles(container: FrameLayout) {
+        val toRemove = (0 until container.childCount).map { container.getChildAt(it) }.filter { it.tag == SPARKLE_TAG }
+        toRemove.forEach { container.removeView(it) }
+    }
+
+    private fun sparkleLoop(star: TextView) {
+        if (!star.isAttachedToWindow) return
+        star.alpha = 0f; star.scaleX = 0.4f; star.scaleY = 0.4f; star.rotation = 0f
+        star.animate().alpha(1f).scaleX(1.2f).scaleY(1.2f).rotationBy(180f).setDuration(380)
+            .withEndAction {
+                if (!star.isAttachedToWindow) return@withEndAction
+                star.animate().alpha(0f).scaleX(0.4f).scaleY(0.4f).setDuration(380)
+                    .withEndAction {
+                        if (star.isAttachedToWindow) star.postDelayed({ sparkleLoop(star) }, (300..900).random().toLong())
+                    }
+                    .start()
+            }
+            .start()
     }
 }

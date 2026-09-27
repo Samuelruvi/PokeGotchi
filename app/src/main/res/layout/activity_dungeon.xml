@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pantalla de la mazmorra (ver DungeonActivity/DungeonView) - sustituye al widget de pantalla
+     de inicio retirado. Dos estados exclusivos: la vista en vivo (dungeon_live_root) mientras hay
+     un explorador asignado, o el selector (dungeon_picker_root) mientras no. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#15131A">
+
+    <LinearLayout
+        android:id="@+id/dungeon_live_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <com.example.pokegotchi.DungeonView
+            android:id="@+id/dungeon_view"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- Barra inferior: resumen persistente de la carrera (XP/niveles simulados/objetos) -
+             pedido explicito del usuario en vez de avisos puntuales: "quitame las notificaciones
+             que aparecen abajo como pop-ups... vamos a tener un sitio especifico para eso... asi
+             empezamos a ver si esta nivelado o no, que items se estan usando" - junto con
+             Abandonar (movido aqui desde la esquina superior, pedido explicito del usuario: "el
+             boton de abandonar ponlo en otro sitio"), ya que este panel solo se ve mientras se
+             explora, el mismo sitio donde tiene sentido decidir dejarlo. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1B1B1B"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="10dp">
+            <TextView
+                android:id="@+id/dungeon_run_summary"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+            <TextView
+                android:id="@+id/dungeon_abandon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="#992B2B2B"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="6dp"
+                android:text="🏳️ Abandonar"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Selector - cabecera roja igual que el resto de la app (activity_main.xml, "PokeGotchi")
+         - pedido explicito del usuario: "mantén el formato de que la parte de arriba sea rojo",
+         aclarado despues a que era AQUI (el selector), no en la vista en vivo. "PokeGotchi" con el
+         mismo tamaño/estilo que en activity_main.xml (22sp, blanco, negrita) - pedido explicito:
+         "el texto de pokegotchi también en rojo" (dentro de la propia cabecera roja, no solo el
+         fondo). -->
+    <LinearLayout
+        android:id="@+id/dungeon_picker_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#EE1515"
+            android:orientation="vertical"
+            android:padding="14dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PokeGotchi"
+                android:textColor="#FFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Mazmorra"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:id="@+id/dungeon_last_summary"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+                <!-- Solo visible en COOLDOWN (ver DungeonActivity.showCountdownOnly) - pedido
+                     explicito del usuario: "mientras esperas el tiempo de cooldon agrega un boton
+                     para cambiar de pokemon y que te deje elegir si es bucle otra vez o no...
+                     si no tocas nada el bucle sigue, el boton es para sustituir el pokemon del
+                     bucle o hacer la siguiente carrera con otro pokemon". Si no se toca nada aqui,
+                     el bucle sigue solo (DungeonService lo resuelve en segundo plano) - este boton
+                     es la unica forma de intervenir mientras se espera. -->
+                <TextView
+                    android:id="@+id/dungeon_cooldown_message"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+                <LinearLayout
+                    android:id="@+id/dungeon_cooldown_actions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="16dp"
+                    android:visibility="gone">
+                    <TextView
+                        android:id="@+id/dungeon_switch_pokemon"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:background="#992B6B2B"
+                        android:paddingHorizontal="12dp"
+                        android:paddingVertical="10dp"
+                        android:gravity="center"
+                        android:text="🔁 Cambiar de Pokémon"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:id="@+id/dungeon_cooldown_abandon"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:background="#992B2B2B"
+                        android:paddingHorizontal="12dp"
+                        android:paddingVertical="10dp"
+                        android:gravity="center"
+                        android:text="🏳️ Abandonar"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/dungeon_picker_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:text="Elige quién explora la mazmorra"
+                    android:textColor="#FFFFFF"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/dungeon_picker_grid"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- Volver (siempre visible) - Abandonar ya no vive aqui, ver dungeon_live_root de arriba. -->
+    <TextView
+        android:id="@+id/dungeon_back"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:padding="8dp"
+        android:text="✕"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp" />
+</FrameLayout>

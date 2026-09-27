@@ -7,6 +7,16 @@
 
     <style name="Theme.PokeGotchi" parent="Base.Theme.PokeGotchi" />
 
+    <!-- Mazmorra: pedido explicito del usuario "no quiero que se vea en pantalla completa...
+         algo opcional" - ventana flotante (tamaño real fijado en DungeonActivity.onCreate via
+         window.setLayout, no aqui) en vez de una Activity normal a pantalla completa. -->
+    <style name="Theme.PokeGotchi.Dungeon" parent="Theme.Material3.DayNight.Dialog">
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+    </style>
+
     <!-- Material3 hace el FloatingActionButton un cuadrado con esquinas redondeadas por
          defecto - el usuario pidio explicitamente "el tipico circulito", asi que se fuerza
          la forma a un circulo perfecto (radio de esquina = 50%). -->

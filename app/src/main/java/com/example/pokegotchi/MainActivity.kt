@@ -21,6 +21,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -98,6 +99,14 @@ class MainActivity : AppCompatActivity() {
         ) {
             requestNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // Primer arranque de verdad: todavia no hay nickname/retrato de entrenador -> redirige a
+        // TrainerSetupActivity ANTES que a StarterActivity (pedido explicito del usuario: elegir
+        // nombre y avatar antes que el Pokemon inicial).
+        if (!PetState.hasTrainerProfile(this)) {
+            startActivity(Intent(this, TrainerSetupActivity::class.java))
+            finish()
+            return
+        }
         // Primer arranque: aun no se ha elegido inicial -> redirige a StarterActivity y no
         // muestra la Pokedex normal (que empezaria "vacia", sin nada activo en el widget).
         if (!PetState.hasChosenStarter(this)) {
@@ -142,9 +151,10 @@ class MainActivity : AppCompatActivity() {
         // Tocar el nivel de entrenador, cuando hay algun fondo por desbloquear (mismo aviso "⬆️"
         // que ya se enseña en showLevel()), abre directamente Ajustes en la rejilla de fondos -
         // pedido explicito del usuario, en vez de tener que entrar al menu ⋮ a mano para verlo.
-        tvTrainerLevel.setOnClickListener {
-            if (PetState.bgTokensAvailable(this) > 0) showSettingsDialog()
-        }
+        // Tocar el nivel de entrenador abre SIEMPRE la ficha de entrenador (pedido explicito del
+        // usuario) - el atajo de antes al menu de fondos (solo si habia una ficha pendiente)
+        // ahora vive DENTRO de la ficha, ver showTrainerCardDialog.
+        tvTrainerLevel.setOnClickListener { showTrainerCardDialog() }
         findViewById<TextView>(R.id.tab_mine).setOnClickListener { setFilterMode(FILTER_MINE) }
         findViewById<TextView>(R.id.tab_favorites).setOnClickListener { setFilterMode(FILTER_FAVORITES) }
         findViewById<TextView>(R.id.tab_all).setOnClickListener { setFilterMode(FILTER_ALL) }
@@ -169,8 +179,14 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<TextView>(R.id.btn_menu).setOnClickListener { showSettingsDialog() }
         findViewById<TextView>(R.id.btn_offer).setOnClickListener { showOfferDialog() }
+        // Icono propio en la cabecera, junto al del regalo - pedido explicito del usuario tras
+        // ver la Mazmorra enterrada en Ajustes: "no me gusta la ubicacion de la mazmorra. me
+        // gustaria que puedas entrar al menu de una forma mas organica".
+        findViewById<TextView>(R.id.btn_dungeon).setOnClickListener { startActivity(Intent(this, DungeonActivity::class.java)) }
         showLevel()
         WidgetRefresh.updateWidgets(this)   // refresca el widget al abrir (regenera sprites de cache antigua)
+        // retoma el avance de fondo (o la espera del cooldown de modo continuo) si el proceso se reinicio a medio explorar/descansar
+        if (DungeonState.isExploring(this) || DungeonState.isInCooldown(this)) DungeonService.start(this)
     }
 
     override fun onResume() {
@@ -356,7 +372,7 @@ class MainActivity : AppCompatActivity() {
             nameView.animate().alpha(1f).setDuration(350).start()
             if (shiny) {
                 SoundManager.playShiny(this)
-                playShinySparkles(spriteFrame, w, h)
+                EffectGenerator.playShinySparkles(this, spriteFrame, w, h)
             }
             posBtn.visibility = View.VISIBLE
             negBtn.visibility = View.VISIBLE
@@ -392,41 +408,6 @@ class MainActivity : AppCompatActivity() {
      *  estrella parpadea+gira+escala en un bucle propio con retardo aleatorio entre vueltas (para
      *  que no titilen todas a la vez, mas organico) - el bucle se para solo cuando el dialogo se
      *  cierra (la vista deja de estar attached), sin depender de cancelar nada a mano. */
-    private fun playShinySparkles(container: FrameLayout, w: Int, h: Int) {
-        val positions = listOf(
-            0.02f to 0.02f, 0.88f to 0.08f, 0.05f to 0.72f,
-            0.90f to 0.68f, 0.42f to -0.08f, 0.48f to 0.85f
-        )
-        positions.forEachIndexed { i, (fx, fy) ->
-            val star = TextView(this).apply {
-                text = "✨"
-                textSize = 18f
-                alpha = 0f
-                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                    leftMargin = (w * fx).toInt()
-                    topMargin = (h * fy).toInt()
-                }
-            }
-            container.addView(star)
-            star.postDelayed({ sparkleLoop(star) }, i * 180L)
-        }
-    }
-
-    private fun sparkleLoop(star: TextView) {
-        if (!star.isAttachedToWindow) return
-        star.alpha = 0f; star.scaleX = 0.4f; star.scaleY = 0.4f; star.rotation = 0f
-        star.animate().alpha(1f).scaleX(1.2f).scaleY(1.2f).rotationBy(180f).setDuration(380)
-            .withEndAction {
-                if (!star.isAttachedToWindow) return@withEndAction
-                star.animate().alpha(0f).scaleX(0.4f).scaleY(0.4f).setDuration(380)
-                    .withEndAction {
-                        if (star.isAttachedToWindow) star.postDelayed({ sparkleLoop(star) }, (300..900).random().toLong())
-                    }
-                    .start()
-            }
-            .start()
-    }
-
     /** Aviso de "¿seguro?" antes de quedarse con el Pokemon del huevo: deja claro que el Pokemon
      *  ACTUAL (con el que se lleva jugando hasta ahora) se pierde. La cria del huevo NO siempre
      *  empieza en nivel 1: si ya existia un individuo de esa misma especie+shiny sin evolucionar
@@ -594,13 +575,17 @@ class MainActivity : AppCompatActivity() {
      *  siempre es false; en la revelacion del huevo SI hace falta (el shiny ya se tiro al
      *  ponerlo) - antes se ignoraba aqui y el sprite salia siempre en color normal aunque el
      *  huevo fuese shiny de verdad (solo se notaba por las estrellitas/sonido), pedido explicito
-     *  del usuario ("verlo saliendo del huevo" ya en shiny). */
-    private fun loadAnimatedSprite(imageView: ImageView, name: String, shiny: Boolean = false) {
+     *  del usuario ("verlo saliendo del huevo" ya en shiny). [intervalOverrideMs]: por defecto
+     *  null (usa el intervalo de siempre, LOCAL_SPRITE_INTERVAL_MS=100ms) - la ficha de
+     *  entrenador pide uno mas lento (pedido explicito del usuario, "va muy rapido") porque ahi
+     *  el sprite se queda en bucle mientras se mira la tarjeta entera, a diferencia de la
+     *  revelacion puntual del huevo/oferta. */
+    private fun loadAnimatedSprite(imageView: ImageView, name: String, shiny: Boolean = false, intervalOverrideMs: Int? = null) {
         Thread {
             val local = SpriteRepository.localAnimatedFramesScaled(imageView.context, name, shiny, PetState.spriteScaleMode(imageView.context))
             runOnUiThread {
                 if (local != null) {
-                    playLocalFrames(imageView, local.first, local.second)
+                    playLocalFrames(imageView, local.first, intervalOverrideMs ?: local.second)
                 } else {
                     loadAnimatedSpriteFromNetwork(imageView, name, shiny)
                 }
@@ -715,16 +700,27 @@ class MainActivity : AppCompatActivity() {
                 }
                 loadAnimatedSprite(cell, mon.name)
                 cellFrame.addView(cell)
-                if (isRare) playShinySparkles(cellFrame, cellW, cellH)
+                if (isRare) EffectGenerator.playShinySparkles(this, cellFrame, cellW, cellH)
+                // Confirmacion antes de elegir (pedido explicito del usuario tras descartar un
+                // regalo entero sin querer con un toque perdido: "en el regalo puedes poner una
+                // confirmacion de descartar y de confirmacion del pokemon?") - elegir tambien es
+                // irreversible (el resto de la oferta se pierde), asi que merece el mismo aviso.
                 cellFrame.setOnClickListener {
-                    dbg("regalo: elegido ${mon.name} de entre ${offer.joinToString(",") { it.name }}")
-                    PetState.resolveOffer(this@MainActivity, mon.name)
-                    NotificationHelper.cancelOfferReady(this@MainActivity)
-                    dialog.dismiss()
-                    refreshOfferBadge()
-                    refreshRows()
-                    adapter.notifyDataSetChanged()
-                    Toast.makeText(this@MainActivity, "¡${PetState.displayLabel(mon.name)} añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
+                    androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                        .setTitle(PetState.displayLabel(mon.name))
+                        .setMessage("¿Seguro que quieres elegir a ${PetState.displayLabel(mon.name)}? Se añadirá a tu Pokédex y el resto de la oferta se perderá.")
+                        .setPositiveButton("Elegir") { _, _ ->
+                            dbg("regalo: elegido ${mon.name} de entre ${offer.joinToString(",") { it.name }}")
+                            PetState.resolveOffer(this@MainActivity, mon.name)
+                            NotificationHelper.cancelOfferReady(this@MainActivity)
+                            dialog.dismiss()
+                            refreshOfferBadge()
+                            refreshRows()
+                            adapter.notifyDataSetChanged()
+                            Toast.makeText(this@MainActivity, "¡${PetState.displayLabel(mon.name)} añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
+                        }
+                        .setNegativeButton("Cancelar", null)
+                        .show()
                 }
                 rowLl.addView(cellFrame)
             }
@@ -746,11 +742,20 @@ class MainActivity : AppCompatActivity() {
         frame.addView(content)
         dialog = androidx.appcompat.app.AlertDialog.Builder(this).setView(frame).create()
         btnDismiss.setOnClickListener {
-            dbg("regalo: descartado entero (${offer.joinToString(",") { it.name }})")
-            PetState.dismissOffer(this)
-            NotificationHelper.cancelOfferReady(this)
-            refreshOfferBadge()
-            dialog.dismiss()
+            // Confirmacion antes de descartar (pedido explicito del usuario, ver comentario de
+            // arriba) - antes un solo toque perdido tiraba la oferta entera sin forma de deshacerlo.
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Descartar regalo")
+                .setMessage("¿Seguro que quieres descartar esta oferta entera? No podrás recuperar estos 5 candidatos.")
+                .setPositiveButton("Descartar") { _, _ ->
+                    dbg("regalo: descartado entero (${offer.joinToString(",") { it.name }})")
+                    PetState.dismissOffer(this)
+                    NotificationHelper.cancelOfferReady(this)
+                    refreshOfferBadge()
+                    dialog.dismiss()
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
         }
         btnLater.setOnClickListener { dialog.dismiss() }
         dialog.show()
@@ -1422,16 +1427,8 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(16), dp(20), dp(8))
         }
 
-        // --- Fondo (rejilla de 3 columnas) ---
-        root.addView(TextView(this).apply {
-            text = "Fondo"; textSize = 16f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, dp(8))
-        })
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(grid)
-        buildBgGrid(grid)
-        root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(14)) })
+        // --- Fondos: se movio a la ficha de entrenador (showBackgroundPickerDialog), pedido
+        //     explicito del usuario - ya no vive aqui. ---
 
         // --- Nitidez del sprite (prueba: vecino cercano vs Scale2x, ver conversacion) - al
         //     fondo, pedido explicito del usuario, justo encima del Debug. ---
@@ -1465,11 +1462,24 @@ class MainActivity : AppCompatActivity() {
         root.addView(scaleGroup)
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(24)) })
 
+        // Mazmorra: ya NO vive aqui - movida a un icono propio en la cabecera (junto al regalo),
+        // pedido explicito del usuario: "no me gusta la ubicacion de la mazmorra. me gustaria que
+        // puedas entrar al menu de una forma mas organica" (enterrada en Ajustes junto a opciones
+        // de desarrollo no encajaba con lo importante que es esta pantalla). Ver btn_dungeon en
+        // activity_main.xml y su listener en onCreate.
+
         // --- Ver log: fuera del menu debug (pedido explicito del usuario) - no hace falta
         //     contraseña para esto, es solo diagnostico de lectura, no edita nada del juego. ---
         root.addView(Button(this).apply {
             text = "📋 Ver log"; isAllCaps = false
             setOnClickListener { showDebugLogDialog() }
+        })
+        // --- Log de mazmorra: misma idea, filtrado a solo lo relevante para diagnosticar el
+        //     segundo plano (pedido explicito del usuario: "logs solo de la dungeon... para
+        //     diagnosticar si no esta funcionando en segundo plano"). ---
+        root.addView(Button(this).apply {
+            text = "🗺️ Log de mazmorra"; isAllCaps = false
+            setOnClickListener { showDungeonLogDialog() }
         })
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, dp(8)) })
 
@@ -1487,6 +1497,407 @@ class MainActivity : AppCompatActivity() {
             .setView(scroll)
             .setPositiveButton("Cerrar", null)
             .show()
+    }
+
+    // ==================== FICHA DE ENTRENADOR ====================
+    // Retrato + nickname (editables "cuando sea" via TrainerSetupActivity en modo edicion),
+    // nivel de entrenador, cuantas especies tiene registradas, y un Pokemon favorito destacado
+    // (elegido de entre los ya marcados favoritos, con su variante/forma exacta) - pedido
+    // explicito del usuario. Se abre tocando tv_trainer_level (ver listener en onCreate).
+
+    /** Cuantas especies DISTINTAS tiene el jugador desbloqueadas ahora mismo, sobre el total real
+     *  de la Pokedex - a diferencia del contador de refreshRows() (que depende de la pestaña/
+     *  busqueda activa), este es siempre el mismo numero fijo ("Mis Pokemon" sin filtrar),
+     *  pensado para la tarjeta de entrenador, no para la pantalla principal. Triple(poseidas,
+     *  total, progreso 0f..1f) para poder rellenar tanto el texto como la barra sin repetir el
+     *  calculo. */
+    private fun ownedSpeciesStats(): Triple<Int, Int, Float> {
+        val owned = allMons.filter { PetState.isUnlocked(this, it.name) }.map { it.id }.distinct().size
+        val total = allMons.map { it.id }.distinct().size
+        return Triple(owned, total, if (total > 0) owned.toFloat() / total else 0f)
+    }
+
+    private fun ownedSpeciesCountText(): String {
+        val (owned, total, progress) = ownedSpeciesStats()
+        return "$owned / $total especies (${"%.1f".format(progress * 100)}%)"
+    }
+
+    /** Todas las formas YA vistas de verdad (obtained=true) de las 3 vitrinas de mecanica de
+     *  [name] (genero, formas, mega/gigantamax - ver PetState.speciesMechanics), fusionadas en
+     *  una sola lista plana: cada MechanicForm ya trae su propia etiqueta descriptiva, no hace
+     *  falta agrupar por categoria para un selector de "elige una". */
+    private fun obtainedShowcaseForms(name: String): List<PetState.MechanicForm> {
+        val m = PetState.speciesMechanics(this, name)
+        return (m.genderShowcase?.forms.orEmpty() + m.formShowcase?.forms.orEmpty() + m.megaShowcase?.forms.orEmpty())
+            .filter { it.obtained }
+    }
+
+    /** Tarjeta de entrenador "de verdad" (pedido explicito del usuario: "como en los juegos
+     *  originales") - nombre, nivel CON barra justo debajo, un escenario con el fondo REAL del
+     *  tipo del favorito (ver PetState.suggestedBackgrounds) mostrando al entrenador y al
+     *  favorito uno junto al otro a tamaño fiel, contador de Pokedex CON barra, y el selector de
+     *  fondos (antes en el menu ⋮, movido aqui a peticion explicita del usuario, dejando claro
+     *  cuantos hay por desbloquear). Toda la logica de datos es la misma de siempre, solo cambia
+     *  de "filas de texto en un AlertDialog" a "vistas ya maquetadas en XML". */
+    private fun showTrainerCardDialog() {
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_trainer_card, null)
+        lateinit var dialog: androidx.appcompat.app.AlertDialog
+
+        view.findViewById<TextView>(R.id.card_name).text = PetState.trainerName(this)
+        view.findViewById<TextView>(R.id.card_level).text = "Entrenador Nv.${PetState.trainerLevel(this)}"
+        view.findViewById<ProgressBar>(R.id.card_level_bar).progress = (PetState.trainerProgress(this) * 1000).toInt()
+        view.findViewById<TextView>(R.id.card_dex_count).text = ownedSpeciesCountText()
+        view.findViewById<ProgressBar>(R.id.card_dex_bar).progress = (ownedSpeciesStats().third * 1000).toInt()
+
+        val portrait = view.findViewById<ImageView>(R.id.card_trainer_portrait)
+        portrait.setImageBitmap(TrainerSprites.bitmap(this, PetState.trainerSprite(this)))
+        portrait.setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, TrainerSetupActivity::class.java).putExtra(TrainerSetupActivity.EXTRA_EDIT_MODE, true))
+        }
+
+        val favImg = view.findViewById<ImageView>(R.id.card_favorite_pokemon)
+        val favHint = view.findViewById<TextView>(R.id.card_favorite_hint)
+        val fav = PetState.showcaseFavorite(this)
+        // Escenario: fondo real a juego con el tipo del favorito (mismo sistema que ya usan los
+        // fondos comprables, ver PetState.suggestedBackgrounds/BG_FOR_TYPE) - si no hay favorito
+        // elegido, se usa el fondo actual del compañero activo como alternativa razonable.
+        val stageBg = fav?.let { (name, shiny, _) -> PetState.suggestedBackgrounds(this, name, shiny).firstOrNull() }
+            ?: PetState.currentBg(this)
+        val stageBgRes = resources.getIdentifier(stageBg, "drawable", packageName)
+        if (stageBgRes != 0) view.findViewById<ImageView>(R.id.card_stage_bg).setImageResource(stageBgRes)
+        if (fav != null) {
+            val (favName, favShiny, favForm) = fav
+            val spriteName = favForm.ifEmpty { favName }
+            favHint.visibility = View.GONE
+            // Tamaño fiel al sprite real (pedido explicito del usuario: un Sceptile no puede
+            // verse la mitad de pequeño que el entrenador) - ver
+            // SpriteRepository.localCanvasHeight. 1.85 calibrado a mano para que Charizard
+            // (h=91) roce el tope de 170dp sin superarlo; especies aun mas grandes (Wailord,
+            // h=103) se recortan ahi, lo demas escala hacia abajo proporcionalmente.
+            val canvasH = SpriteRepository.localCanvasHeight(this, spriteName, favShiny) ?: 70
+            val targetDp = (canvasH * 1.85f).coerceIn(60f, 170f)
+            favImg.layoutParams = favImg.layoutParams.apply {
+                height = (targetDp * resources.displayMetrics.density).toInt()
+            }
+            // Animado (pedido explicito del usuario) - mismo helper ya usado para la revelacion
+            // del huevo/oferta, local-first con red como respaldo. Intervalo mas lento (180ms,
+            // el mismo ritmo del idle del widget) - el de 100ms de siempre se quedaba "muy
+            // rapido" en bucle continuo (pedido explicito del usuario).
+            loadAnimatedSprite(favImg, spriteName, favShiny, intervalOverrideMs = 180)
+        } else {
+            favImg.setImageBitmap(null)
+            favHint.visibility = View.VISIBLE
+        }
+        favImg.setOnClickListener { dialog.dismiss(); showFavoriteShowcasePickerDialog() }
+        favHint.setOnClickListener { dialog.dismiss(); showFavoriteShowcasePickerDialog() }
+
+        // El selector de fondos vive aqui ahora (antes en el menu ⋮, pedido explicito del
+        // usuario) - el texto deja claro cuantos hay por desbloquear ahora mismo.
+        val tokens = PetState.bgTokensAvailable(this)
+        view.findViewById<Button>(R.id.card_bg_shortcut).apply {
+            text = if (tokens > 0) "🖼️ Fondos (🎁 $tokens por desbloquear)" else "🖼️ Fondos"
+            setOnClickListener { dialog.dismiss(); showBackgroundPickerDialog() }
+        }
+
+        val foundItems = DungeonState.discoveredItems(this).size
+        view.findViewById<Button>(R.id.card_items_shortcut).apply {
+            text = "🎒 Objetos ($foundItems/${DungeonItemCatalog.DECOR_ITEMS.size})"
+            setOnClickListener { dialog.dismiss(); showItemsPokedexDialog() }
+        }
+
+        dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(view)
+            .setPositiveButton("Cerrar", null)
+            .setNeutralButton("📤 Compartir", null)
+            .create()
+        dialog.show()
+        // Sobreescrito DESPUES de show() para que el boton NO cierre el dialogo solo (el
+        // comportamiento por defecto de AlertDialog.Builder.setNeutralButton siempre cierra al
+        // pulsar) - pedido explicito del usuario: generar y compartir una imagen de la ficha.
+        dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            shareTrainerCardImage(view)
+        }
+    }
+
+    /** Genera una imagen PNG de la ficha de entrenador TAL CUAL se ve ahora mismo, quitando solo
+     *  lo que no tiene sentido en una imagen estatica para compartir (pedido explicito del
+     *  usuario: "quitando el boton de cerrar, los fondos y el lapiz de editar") - el boton
+     *  "Cerrar"/"Compartir" ya viven fuera de [dialogView] (son botones del propio AlertDialog,
+     *  nunca se capturan); aqui solo hace falta ocultar temporalmente el lapiz de editar retrato
+     *  y el atajo de fondos, dibujar el contenido a un Bitmap, y devolverlos a como estaban. */
+    private fun shareTrainerCardImage(dialogView: View) {
+        val contentRoot = dialogView.findViewById<View>(R.id.card_content_root)
+        val pencil = dialogView.findViewById<View>(R.id.card_pencil_icon)
+        val bgButton = dialogView.findViewById<View>(R.id.card_bg_shortcut)
+        val prevPencilVis = pencil.visibility
+        val prevBgVis = bgButton.visibility
+        pencil.visibility = View.GONE
+        bgButton.visibility = View.GONE
+        // Igual que en TrainerSetupActivity.animateBallThrow: cambiar a GONE solo deja el tamaño
+        // final REAL disponible despues de la siguiente pasada de layout, no en este mismo
+        // instante - post() la espera.
+        contentRoot.post {
+            try {
+                val w = contentRoot.width; val h = contentRoot.height
+                if (w <= 0 || h <= 0) throw IllegalStateException("vista sin medir")
+                // Fondo solido detras del contenido (el LinearLayout no pinta ninguno propio, se
+                // apoya en el fondo del dialogo) - se elige claro u oscuro segun el color de
+                // texto YA resuelto por el tema en tiempo real, para que el resultado sea
+                // legible tanto en tema claro como oscuro sin tener que adivinarlo a mano.
+                val textColor = dialogView.findViewById<TextView>(R.id.card_name).currentTextColor
+                val luminance = (Color.red(textColor) * 299 + Color.green(textColor) * 587 + Color.blue(textColor) * 114) / 1000
+                val cardBg = if (luminance > 128) Color.parseColor("#1B1B1B") else Color.WHITE
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bmp)
+                canvas.drawColor(cardBg)
+                contentRoot.draw(canvas)
+                val file = java.io.File(filesDir, "trainer_card_share.png")
+                java.io.FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(send, "Compartir ficha de entrenador"))
+            } catch (e: Exception) {
+                dbg("compartir ficha fallo: $e")
+                Toast.makeText(this, "No se pudo compartir: $e", Toast.LENGTH_LONG).show()
+            } finally {
+                pencil.visibility = prevPencilVis
+                bgButton.visibility = prevBgVis
+            }
+        }
+    }
+
+    /** Pokedex de objetos decorativos de la mazmorra - pedido explicito del usuario: "quiero que
+     *  los objetos decorativos se puedan coleccionar... que incluya todos los objetos de la
+     *  mazmorra... que en la pokedex aparezca la probabilidad de salir. asi se puede ver si te ha
+     *  tocado un item raro". Rejilla de los 129 objetos del catalogo (DungeonItemCatalog),
+     *  ordenados por categoria (Comun->Epico) y luego alfabeticamente; los ya encontrados
+     *  (DungeonState.discoveredItems) muestran su icono real, nombre y % de probabilidad de
+     *  categoria - los que no, una silueta "❓" y "???" (mismo espiritu que una Pokedex real: se
+     *  sabe QUE existe y de que rareza es, pero no el aspecto hasta encontrarlo). Solo cubre el
+     *  rol "decor" (129 de 308 objetos catalogados) - el resto de roles ya tienen su propio efecto
+     *  mecanico y su propio texto al recogerlos, no necesitan coleccion aparte (ver comentario de
+     *  DungeonItemCatalog). */
+    private fun showItemsPokedexDialog() {
+        val discovered = DungeonState.discoveredItems(this)
+        val rarityOrder = DungeonItemCatalog.ItemRarity.values().toList()
+        val entries = DungeonItemCatalog.DECOR_ITEMS.sortedWith(
+            compareBy({ rarityOrder.indexOf(it.rarity) }, { it.displayName })
+        )
+        val tierCounts = DungeonItemCatalog.ItemRarity.values().associateWith { tier ->
+            val total = DungeonItemCatalog.DECOR_ITEMS.count { it.rarity == tier }
+            val found = DungeonItemCatalog.DECOR_ITEMS.count { it.rarity == tier && it.fileName in discovered }
+            found to total
+        }
+
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), 0)
+        }
+        root.addView(TextView(this).apply {
+            text = DungeonItemCatalog.ItemRarity.values().joinToString("   ") { tier ->
+                val (found, total) = tierCounts.getValue(tier)
+                "${tier.label} $found/$total"
+            }
+            textSize = 12f
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val rv = RecyclerView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutManager = GridLayoutManager(this@MainActivity, 4)
+        }
+        rv.adapter = object : RecyclerView.Adapter<DungeonItemVH>() {
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DungeonItemVH =
+                DungeonItemVH(LayoutInflater.from(parent.context).inflate(R.layout.item_dungeon_item, parent, false))
+            override fun getItemCount() = entries.size
+            override fun onBindViewHolder(holder: DungeonItemVH, position: Int) {
+                val info = entries[position]
+                val found = info.fileName in discovered
+                val pct = DungeonItemCatalog.dropChancePercent(info)
+                // El icono SIEMPRE es el real (ya viene bundleado en la app, no hay nada que
+                // "descargar" ni spoilear con la forma/color) - lo que cambia es si se ve a todo
+                // color o en gris, pedido explicito del usuario: "que aparezca el sprite del item
+                // en gris en vez de un interrogante". El nombre real se sigue ocultando hasta
+                // encontrarlo (misma logica que una Pokedex real con silueta).
+                holder.thumb.setImageBitmap(DungeonSpriteRepository.itemIcon(this@MainActivity, info.fileName))
+                holder.thumb.colorFilter = if (found) null else GRAYSCALE_FILTER
+                holder.name.text = if (found) info.displayName else "???"
+                holder.rarity.text = "${info.rarity.label} · ${"%.2f".format(pct)}%"
+                holder.rarity.setTextColor(Color.parseColor(info.rarity.colorHex))
+                holder.root.setOnClickListener {
+                    val msg = if (found) "${info.displayName} · ${info.rarity.label} (${"%.2f".format(pct)}% de probabilidad)"
+                        else "Todavía no lo has encontrado · ${info.rarity.label} (${"%.2f".format(pct)}% de probabilidad)"
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        root.addView(rv)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Objetos de la mazmorra (${discovered.size}/${entries.size})")
+            .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .create()
+            .show()
+    }
+
+    private inner class DungeonItemVH(v: View) : RecyclerView.ViewHolder(v) {
+        val root: View = v.findViewById(R.id.item_root)
+        val thumb: ImageView = v.findViewById(R.id.thumb)
+        val name: TextView = v.findViewById(R.id.name)
+        val rarity: TextView = v.findViewById(R.id.rarity)
+    }
+
+    private companion object {
+        // Satura a 0 - icono real en gris (sin recolorear a mano) para un objeto de la mazmorra
+        // aun no encontrado, ver DungeonItemVH.onBindViewHolder.
+        val GRAYSCALE_FILTER = android.graphics.ColorMatrixColorFilter(
+            android.graphics.ColorMatrix().apply { setSaturation(0f) }
+        )
+    }
+
+    /** Selector de fondos - antes vivia dentro del menu ⋮ (showSettingsDialog), movido a su
+     *  propio dialogo pedido explicito del usuario ("que ahora este ahi la seleccion de fondos y
+     *  no en los tres puntitos"), abierto desde el boton de la ficha de entrenador. Misma rejilla
+     *  de siempre (buildBgGrid), sin cambios en su logica. */
+    private fun showBackgroundPickerDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val grid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(8))
+        }
+        buildBgGrid(grid)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Fondos")
+            .setView(ScrollView(this).apply { addView(grid) })
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
+    /** Paso 1 del selector de favorito destacado: elegir de entre los que YA cuentan como
+     *  favoritos de verdad (PetState.favoriteIndividuals) - mismo molde de rejilla en chunked(3)
+     *  que showDecorativeFormDialog. */
+    private fun showFavoriteShowcasePickerDialog() {
+        val candidates = PetState.favoriteIndividuals(this)
+        if (candidates.isEmpty()) {
+            Toast.makeText(this, "Marca algún Pokémon como favorito primero (pestaña Favoritos)", Toast.LENGTH_LONG).show()
+            return
+        }
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val grid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+        }
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Elige tu favorito destacado")
+            .setView(ScrollView(this).apply { addView(grid) })
+            .setNegativeButton("Cancelar", null)
+            .create()
+        for (row in candidates.chunked(3)) {
+            val rowLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            for ((name, shiny) in row) {
+                val cell = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        setMargins(dp(4), dp(4), dp(4), dp(4))
+                    }
+                    setBackgroundColor(Color.parseColor("#EEEEEE"))
+                    setPadding(dp(6), dp(8), dp(6), dp(8))
+                }
+                val img = ImageView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(64), dp(56))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                cell.addView(img)
+                loadLocalOrNetworkThumb(img, PetState.displaySpriteName(this, name, shiny), shiny) {
+                    img.load("https://play.pokemonshowdown.com/sprites/gen5/${SpriteRepository.toShowdownSlug(name)}.png")
+                }
+                cell.addView(TextView(this).apply {
+                    text = PetState.displayLabel(name) + if (shiny) " ✨" else ""
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                })
+                cell.setOnClickListener {
+                    dialog.dismiss()
+                    val forms = obtainedShowcaseForms(name)
+                    if (forms.size > 1) showFavoriteFormPickerDialog(name, shiny, forms)
+                    else {
+                        PetState.setShowcaseFavorite(this, name, shiny, "")
+                        showTrainerCardDialog()
+                    }
+                }
+                rowLayout.addView(cell)
+            }
+            grid.addView(rowLayout)
+        }
+        dialog.show()
+    }
+
+    /** Paso 2 (solo si hay mas de una forma YA vista de [name]): elegir la forma exacta a
+     *  mostrar en la ficha - mismo molde que showFavoriteShowcasePickerDialog. */
+    private fun showFavoriteFormPickerDialog(name: String, shiny: Boolean, forms: List<PetState.MechanicForm>) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val grid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+        }
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Elige la forma")
+            .setView(ScrollView(this).apply { addView(grid) })
+            .setNegativeButton("Cancelar", null)
+            .create()
+        for (row in forms.chunked(3)) {
+            val rowLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            for (form in row) {
+                val cell = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        setMargins(dp(4), dp(4), dp(4), dp(4))
+                    }
+                    setBackgroundColor(Color.parseColor("#EEEEEE"))
+                    setPadding(dp(6), dp(8), dp(6), dp(8))
+                }
+                val img = ImageView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(64), dp(56))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                cell.addView(img)
+                loadLocalOrNetworkThumb(img, form.spriteKey, shiny) {
+                    img.load("https://play.pokemonshowdown.com/sprites/gen5/${SpriteRepository.toShowdownSlug(form.spriteKey)}.png")
+                }
+                cell.addView(TextView(this).apply {
+                    text = form.label
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                })
+                cell.setOnClickListener {
+                    dialog.dismiss()
+                    PetState.setShowcaseFavorite(this, name, shiny, form.spriteKey)
+                    showTrainerCardDialog()
+                }
+                rowLayout.addView(cell)
+            }
+            grid.addView(rowLayout)
+        }
+        dialog.show()
     }
 
     // ==================== MENU DEBUG (protegido por contraseña) ====================
@@ -1528,7 +1939,8 @@ class MainActivity : AppCompatActivity() {
             "🌙 Ventana de noche" to { showDebugSleepWindowDialog() },
             "⏱️ Simular paso del tiempo" to { showDebugTimeSkipDialog() },
             "🥚 Forzar fase del huevo" to { showDebugEggStageDialog() },
-            "✏️ Editar / añadir Pokémon" to { showDebugPokemonEditorDialog() }
+            "✏️ Editar / añadir Pokémon" to { showDebugPokemonEditorDialog() },
+            "📊 Simulador de mazmorra" to { showDungeonBalanceSimulatorDialog() }
         )
         items.forEach { (label, action) ->
             root.addView(Button(this).apply {
@@ -1539,6 +1951,91 @@ class MainActivity : AppCompatActivity() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Menú debug")
             .setView(root)
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
+    /** Simulador de balance de la mazmorra - pedido explicito del usuario: "añadir algun tipo de
+     *  log a las mazmorras para poder tirar varias veces un Pokemon, dejarlo ahi farmeando, y ver
+     *  estadisticas... la probabilidad de criticos, el nivel que va a obtener de media, los items
+     *  que aparecen, los enemigos que aparecen... para validar que esta todo bien y ajustar
+     *  parametros". Corre N carreras COMPLETAS AISLADAS (DungeonSimulator.runBalanceSimulation,
+     *  nunca toca la carrera real en curso) en un hilo aparte y muestra un informe agregado -
+     *  tambien se vuelca al mismo log que "Ver log" (DebugLog), para poder compartirlo igual que
+     *  cualquier otro registro de depuracion. */
+    private fun showDungeonBalanceSimulatorDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(0))
+        }
+        val speciesInput = EditText(this).apply {
+            hint = "Especie (ej. sceptile)"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
+        val shinyCheck = CheckBox(this).apply { text = "Shiny" }
+        val attemptsInput = EditText(this).apply {
+            hint = "Nº de intentos"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText("200")
+        }
+        root.addView(TextView(this).apply {
+            text = "Corre esa cantidad de carreras completas (piso 1 hasta morir) de forma " +
+                "aislada - no toca ninguna carrera real que este en curso a la vez, ni el " +
+                "Pokemon de verdad."
+            textSize = 12.5f
+            setPadding(0, 0, 0, dp(10))
+        })
+        root.addView(speciesInput)
+        root.addView(shinyCheck)
+        root.addView(attemptsInput)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("📊 Simulador de mazmorra")
+            .setView(root)
+            .setPositiveButton("Simular") { _, _ ->
+                val species = speciesInput.text.toString().trim().lowercase()
+                val attempts = attemptsInput.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 200
+                if (species.isEmpty()) {
+                    Toast.makeText(this, "Escribe una especie", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val shiny = shinyCheck.isChecked
+                val progressDlg = androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Simulando…")
+                    .setMessage("$attempts carreras de ${PetState.displayLabel(species)}, puede tardar unos segundos.")
+                    .setCancelable(false)
+                    .show()
+                Thread {
+                    val startXp = PetState.rawStats(this, species, shiny)?.xp ?: 0f
+                    val report = DungeonSimulator.runBalanceSimulation(this, species, shiny, startXp, attempts)
+                    val text = DungeonSimulator.formatBalanceReport(report)
+                    dbg("Simulador de mazmorra:\n$text")
+                    runOnUiThread {
+                        progressDlg.dismiss()
+                        showBalanceReportDialog(text)
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showBalanceReportDialog(text: String) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val scroll = android.widget.ScrollView(this)
+        scroll.addView(TextView(this).apply {
+            setText(text)
+            setTextIsSelectable(true)
+            textSize = 12.5f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        })
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Resultado de la simulación")
+            .setView(scroll)
             .setPositiveButton("Cerrar", null)
             .show()
     }
@@ -1567,12 +2064,21 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showDebugLogDialog() {
+    private fun showDebugLogDialog() = showFilteredLogDialog("Log (últimas 300 líneas)") { true }
+
+    /** Log de mazmorra (pedido explicito del usuario) - misma vista de siempre, filtrada a solo
+     *  las lineas con el prefijo "mazmorra:" ya usado en todo DungeonService/DungeonSimulator/
+     *  DungeonState. Filtra el archivo COMPLETO primero y de ahi se queda con las ultimas 300
+     *  coincidencias - filtrar solo dentro de las ultimas 300 lineas crudas dejaria casi vacio el
+     *  resultado si hubo mucha actividad de otros sistemas (huevo, ofertas...) entremedias. */
+    private fun showDungeonLogDialog() = showFilteredLogDialog("Log de la mazmorra") { it.contains("mazmorra:") }
+
+    private fun showFilteredLogDialog(title: String, filter: (String) -> Boolean) {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
         val logText = try {
-            val lines = DebugLog.file(this).readLines()
-            lines.takeLast(300).joinToString("\n")
+            val lines = DebugLog.file(this).readLines().filter(filter)
+            if (lines.isEmpty()) "(sin líneas todavía)" else lines.takeLast(300).joinToString("\n")
         } catch (e: Exception) { "(sin log todavía)" }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(Button(this).apply {
@@ -1612,10 +2118,12 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(scroll)
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Log (últimas 300 líneas)")
+            .setTitle(title)
             .setView(root)
             .setPositiveButton("Cerrar", null)
-            .setNeutralButton("Borrar log") { _, _ ->
+            .setNeutralButton("Borrar TODO el log") { _, _ ->
+                // Un solo archivo compartido por toda la app (ver DebugLog) - borra tambien lo
+                // que no se ve en esta vista filtrada, no solo las lineas de mazmorra.
                 try { DebugLog.file(this).delete() } catch (e: Exception) {}
                 Toast.makeText(this, "Log borrado", Toast.LENGTH_SHORT).show()
             }

@@ -4,6 +4,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- DungeonService: mantiene la mazmorra avanzando en segundo plano (mas resistente a que
+         MIUI/Doze mate el proceso que el AlarmManager anterior, DungeonTickReceiver, retirado). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="true"
@@ -29,6 +33,19 @@
             android:name=".StarterActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".TrainerSetupActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Mazmorra: ya NO es un widget de pantalla de inicio (retirado, pedido explicito del
+             usuario - "vamos a quitar el widget... hacer lo mismo bien en la propia aplicacion").
+             Pantalla normal con vista en vivo animada (DungeonActivity/DungeonView). -->
+        <activity
+            android:name=".DungeonActivity"
+            android:exported="false"
+            android:theme="@style/Theme.PokeGotchi.Dungeon" />
+
         <!-- Widget PokeGotchi -->
         <receiver
             android:name=".PokeWidgetProvider"
@@ -41,6 +58,21 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/pokegotchi_widget_info" />
         </receiver>
+
+        <!-- Avance en segundo plano de la mazmorra (ver DungeonService) - servicio en primer
+             plano con notificacion permanente (la misma silenciosa de siempre), en vez del
+             AlarmManager/BroadcastReceiver anterior (DungeonTickReceiver, retirado) - el usuario
+             reporto varias veces seguidas que el avance de fondo se quedaba atascado tras ratos
+             largos con la app cerrada; un servicio en primer plano mantiene el proceso vivo el
+             mismo en vez de depender de que el sistema despierte el proceso a tiempo. -->
+        <service
+            android:name=".DungeonService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="dungeon_background_simulation" />
+        </service>
 
         <!-- Para compartir el log completo como archivo adjunto (ver DebugLog/showDebugLogDialog) -
              un content:// Uri en vez de file://, obligatorio desde hace varias versiones de Android. -->

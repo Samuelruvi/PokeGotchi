@@ -12,6 +12,7 @@
 /app/build
 /captures
 scratch_alcremie_bug.html
+/scratch_ss
 .externalNativeBuild
 .cxx
 local.properties

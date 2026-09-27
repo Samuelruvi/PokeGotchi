@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Borde de la tarjeta de entrenador, SIN relleno (se superpone encima de la imagen de fondo
+     real del tipo del favorito - ver dialog_trainer_card.xml/MainActivity.showTrainerCardDialog,
+     que sí varía en cada apertura, por eso no puede ir todo en un solo drawable estatico). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
+    <stroke android:width="2dp" android:color="#EE1515" />
+</shape>

@@ -25,7 +25,10 @@ import java.util.Locale
 object DebugLog {
     private const val TAG = "PokeGotchiDbg"
     private const val FILE_NAME = "pokegotchi_debug.log"
-    private const val MAX_BYTES = 1_000_000L   // ~1MB, de sobra para un dia entero de uso normal
+    // 5MB (antes 1MB) - el latido de la mazmorra (DungeonService, un log por ciclo de 1 min para
+    // poder ver huecos de segundo plano) añade ~80KB/dia por si solo; con 1MB solo se conservaban
+    // ~12 dias de historial, insuficiente para diagnosticar una ausencia larga.
+    private const val MAX_BYTES = 5_000_000L
     private val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
 
     /** Escribe [msg] en logcat (igual que antes, para verlo en directo con adb) Y en el archivo

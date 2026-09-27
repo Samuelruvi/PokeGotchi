@@ -51,6 +51,37 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // SOLO PARA PRUEBAS (quitar cuando ya no haga falta): vuelca egg_bitmap/needCloud reales
         // a PNG en filesDir, para poder sacarlos por adb y usarlos en el simulador visual.
         const val ACTION_DEBUG_DUMP_ASSETS = "com.example.pokegotchi.ACTION_DEBUG_DUMP_ASSETS"
+        // SOLO PARA PRUEBAS (disparado a mano por adb, nunca desde la propia app - pedido
+        // explicito del usuario: "haz una forma de que puedas forzar que mi pokemon pase de piso
+        // para testear. solo lo puedes hacer tu"): fuerza la carrera de mazmorra EN CURSO al piso
+        // pedido (extra "floor", int), ver DungeonSimulator.debugJumpToFloor. Ejemplo:
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_DUNGEON_JUMP_FLOOR --ei floor 10
+        const val ACTION_DEBUG_DUNGEON_JUMP_FLOOR = "com.example.pokegotchi.ACTION_DEBUG_DUNGEON_JUMP_FLOOR"
+        // SOLO PARA PRUEBAS: corre DungeonSimulator.runBalanceSimulation SIN pasar por la UI (el
+        // dialogo "📊 Simulador de mazmorra" de MainActivity hace lo mismo, pero este broadcast
+        // permite lanzarlo y leer el resultado por logcat directamente, sin tocar el dispositivo
+        // a mano - util para revalidar la dificultad/XP tras un cambio de codigo (tipos,
+        // curacion pasiva, etc.). Corre en un hilo aparte (puede tardar varios segundos con
+        // muchos intentos) y vuelca el informe a DebugLog igual que el dialogo real. Extras:
+        // "species" (obligatorio), "attempts" (int, 200 por defecto), "shiny" (bool, false por
+        // defecto), "start_xp" (float, opcional - por defecto el XP real ya acumulado de esa
+        // especie/variante si existe, o 0). Ejemplo:
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_DUNGEON_BALANCE_SIM --es species sceptile --ei attempts 300
+        const val ACTION_DEBUG_DUNGEON_BALANCE_SIM = "com.example.pokegotchi.ACTION_DEBUG_DUNGEON_BALANCE_SIM"
+        // SOLO PARA PRUEBAS (disparado a mano por adb): fuerza que aparezca una oferta de regalo
+        // nueva de inmediato, sin esperar al ciclo de 24h/48h - pedido explicito del usuario tras
+        // descartar sin querer un regalo real, ver PetState.forceNewOffer. Ejemplo:
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_FORCE_OFFER
+        const val ACTION_DEBUG_FORCE_OFFER = "com.example.pokegotchi.ACTION_DEBUG_FORCE_OFFER"
+        // SOLO PARA PRUEBAS (disparado a mano por adb): repara el ancla del ciclo de regalos tras
+        // el bug real de ACTION_DEBUG_FORCE_OFFER (ver PetState.repairOfferAnchor/forceNewOffer).
+        // Extra opcional "hours_ago" (float, 0 por defecto = temporizador a 24h completas).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR --ef hours_ago 2
+        const val ACTION_DEBUG_REPAIR_OFFER_ANCHOR = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR"
 
         // Refresco periodico del decaimiento.
         private const val TICK_INTERVAL_MS = 15 * 60 * 1000L
@@ -318,6 +349,13 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 } else {
                     renderStatsOnly(context, mgr)
                 }
+                // Segundo camino de recuperacion para la mazmorra (pedido explicito del usuario:
+                // "mejorar sistemas que eviten que si no funciona en segundo plano" se note) -
+                // esta alarma es independiente del foreground service de la mazmorra
+                // (DungeonService), asi que si ese proceso murio, este tick le da una oportunidad
+                // extra de rearrancar (y disparar su propio catch-up) sin depender solo de que el
+                // jugador abra la app a mano. Misma guardia que MainActivity.onCreate.
+                if (DungeonState.isExploring(context) || DungeonState.isInCooldown(context)) DungeonService.start(context)
                 scheduleTick(context)
             }
             ACTION_DEBUG_REVERT -> {
@@ -327,6 +365,35 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     PetState.debugRevertEvolution(context, from, to)
                     renderAll(context, mgr)
                 }
+            }
+            ACTION_DEBUG_DUNGEON_JUMP_FLOOR -> {
+                val floor = intent.getIntExtra("floor", -1)
+                if (floor > 0) DungeonSimulator.debugJumpToFloor(context, floor)
+            }
+            ACTION_DEBUG_DUNGEON_BALANCE_SIM -> {
+                val species = intent.getStringExtra("species")?.trim()?.lowercase()
+                val attempts = intent.getIntExtra("attempts", 200).coerceIn(1, 2000)
+                val shiny = intent.getBooleanExtra("shiny", false)
+                val startXpExtra = intent.getFloatExtra("start_xp", -1f)
+                if (species != null) {
+                    Thread {
+                        val startXp = if (startXpExtra >= 0f) startXpExtra else (PetState.rawStats(context, species, shiny)?.xp ?: 0f)
+                        val report = DungeonSimulator.runBalanceSimulation(context, species, shiny, startXp, attempts)
+                        val text = DungeonSimulator.formatBalanceReport(report)
+                        dbg(context, "Simulador de mazmorra (debug adb, $species x$attempts):\n$text")
+                    }.start()
+                }
+            }
+            ACTION_DEBUG_FORCE_OFFER -> {
+                PetState.forceNewOffer(context)
+                dbg(context, "regalo: oferta forzada por debug (${PetState.currentOffer(context).joinToString(",") { it.name }})")
+                renderAll(context, mgr)
+            }
+            ACTION_DEBUG_REPAIR_OFFER_ANCHOR -> {
+                val hoursAgo = intent.getFloatExtra("hours_ago", 0f)
+                PetState.repairOfferAnchor(context, hoursAgo)
+                dbg(context, "regalo: ancla de ciclo reparada por debug (hoursAgo=$hoursAgo)")
+                renderAll(context, mgr)
             }
             ACTION_DEBUG_DUMP_ASSETS -> {
                 // SOLO PARA PRUEBAS: vuelca a ficheros PNG los bitmaps REALES del huevo (fase 0)
