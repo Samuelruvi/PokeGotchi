@@ -78,14 +78,14 @@ class PokeWidgetProvider : AppWidgetProvider() {
         //   -a com.example.pokegotchi.ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END
         const val ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END = "com.example.pokegotchi.ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END"
         // SOLO PARA PRUEBAS (disparado a mano por adb): fuerza que aparezca una oferta de regalo
-        // nueva de inmediato, sin esperar al ciclo de 24h/48h - pedido explicito del usuario tras
+        // nueva de inmediato, sin esperar al ciclo de 12h/24h - pedido explicito del usuario tras
         // descartar sin querer un regalo real, ver PetState.forceNewOffer. Ejemplo:
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_FORCE_OFFER
         const val ACTION_DEBUG_FORCE_OFFER = "com.example.pokegotchi.ACTION_DEBUG_FORCE_OFFER"
         // SOLO PARA PRUEBAS (disparado a mano por adb): repara el ancla del ciclo de regalos tras
         // el bug real de ACTION_DEBUG_FORCE_OFFER (ver PetState.repairOfferAnchor/forceNewOffer).
-        // Extra opcional "hours_ago" (float, 0 por defecto = temporizador a 24h completas).
+        // Extra opcional "hours_ago" (float, 0 por defecto = temporizador a 12h completas).
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR --ef hours_ago 2
         const val ACTION_DEBUG_REPAIR_OFFER_ANCHOR = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_OFFER_ANCHOR"

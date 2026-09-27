@@ -1305,8 +1305,15 @@ object PetState {
     // una o se descarta explicitamente - asi no "rueda" sola con cada apertura de la app.
     private const val KEY_OFFER_SPECIES = "offer_species"   // "nombre:id,nombre:id,..." o vacio
     private const val KEY_OFFER_LAST = "offer_last_time"   // ancla de INICIO DE CICLO (no de generacion, ver maybeGenerateOffer)
-    private const val OFFER_INTERVAL_HOURS = 24f   // a cuantas horas del inicio del ciclo aparece el regalo
-    private const val OFFER_GRACE_HOURS = 48f      // limite del ciclo: pasado esto sin abrir, se pierde el turno del siguiente regalo (24h de margen tras aparecer)
+    // 12h (antes 24h) - pedido explicito del usuario tras hacer cuentas: con 1025 especies y un
+    // regalo (1 eleccion) por ciclo, a 24h hacian falta casi 3 años para desbloquear el roster
+    // entero, sin contar variantes shiny/formas especiales encima. A 12h se reduce a la mitad.
+    private const val OFFER_INTERVAL_HOURS = 12f   // a cuantas horas del inicio del ciclo aparece el regalo
+    // 24h (antes 48h) - correccion del usuario: el margen es EL DOBLE del intervalo (48=2x24
+    // antes), no un margen fijo de 24h independiente del intervalo - con 36h (intervalo+24h fijas)
+    // la proporcion pasaba de 2x a 3x, "no daria para 3 regalos y el juego no esta preparado para
+    // eso". Con 24h (2x12) se mantiene la MISMA proporcion 2x que ya estaba validada.
+    private const val OFFER_GRACE_HOURS = 24f      // limite del ciclo: pasado esto sin abrir, se pierde el turno del siguiente regalo (el doble del intervalo, misma proporcion de siempre)
 
     data class OfferMon(val name: String, val id: Int)
 
@@ -1337,10 +1344,10 @@ object PetState {
     }
 
     /** Ciclo de regalos (pedido explicitamente asi): el regalo aparece a las OFFER_INTERVAL_HOURS
-     *  (24h) del inicio del ciclo actual; si se abre/descarta antes de OFFER_GRACE_HOURS (48h), el
+     *  (12h) del inicio del ciclo actual; si se abre/descarta antes de OFFER_GRACE_HOURS (24h), el
      *  ciclo se reinicia AL INSTANTE desde ese momento (ver resolveOffer/dismissOffer) - asi el
-     *  jugador que va abriendo sus regalos a tiempo siempre tiene uno nuevo cada 24h, ni mas ni
-     *  menos. Si NO se abre a tiempo, el ciclo avanza igualmente en bloques de 48h (no se queda
+     *  jugador que va abriendo sus regalos a tiempo siempre tiene uno nuevo cada 12h, ni mas ni
+     *  menos. Si NO se abre a tiempo, el ciclo avanza igualmente en bloques de 24h (no se queda
      *  esperando para siempre) pero el regalo pendiente NO desaparece ni se fuerza - solo se
      *  pierde el turno del regalo que le habria tocado al siguiente ciclo, porque el hueco (solo
      *  cabe 1 a la vez) sigue ocupado por el que aun no se ha abierto. Devuelve true solo si de
@@ -1372,9 +1379,9 @@ object PetState {
     }
 
     /** Milisegundos que faltan hasta el proximo hito del ciclo: si aun no hay ninguna oferta
-     *  pendiente, tiempo hasta que APAREZCA (marca de 24h desde el inicio del ciclo); si ya
+     *  pendiente, tiempo hasta que APAREZCA (marca de 12h desde el inicio del ciclo); si ya
      *  aparecio y sigue sin abrirse, tiempo que queda de plazo antes de perder el turno del
-     *  siguiente regalo (marca de 48h). Sigue contando siempre (nunca se oculta ni se congela)
+     *  siguiente regalo (marca de 24h). Sigue contando siempre (nunca se oculta ni se congela)
      *  para que el jugador pueda comprobar el mismo que abrir tarde no le penaliza. */
     fun offerCooldownRemainingMs(context: Context): Long {
         val p = prefs(context)
@@ -1397,7 +1404,7 @@ object PetState {
         }
     }
 
-    /** Momento en que aparecio la oferta ACTUAL (ancla de ciclo + 24h) - usado por
+    /** Momento en que aparecio la oferta ACTUAL (ancla de ciclo + 12h) - usado por
      *  resolveOffer/dismissOffer para no penalizar al jugador que tarda en abrir el regalo. */
     private fun offerAppearedAt(context: Context): Long {
         val last = prefs(context).getLong(KEY_OFFER_LAST, 0L)
@@ -1412,9 +1419,9 @@ object PetState {
      *  sin cambiar el Pokemon activo, y limpia la oferta. Reinicia el ciclo desde el momento en
      *  que ESTE regalo aparecio (no desde ahora): pedido explicitamente asi porque anclar al
      *  instante de abrir penalizaba tardar en abrirlo (cada retraso se acumulaba para siempre en
-     *  el ciclo siguiente). Con esto, el siguiente regalo siempre llega justo 24h despues de que
+     *  el ciclo siguiente). Con esto, el siguiente regalo siempre llega justo 12h despues de que
      *  este apareciera, se abra al momento o con retraso (dentro del plazo de gracia) - si
-     *  tardaste 2h en abrirlo, el timer del siguiente ya empieza mostrando 22h en vez de 24h
+     *  tardaste 2h en abrirlo, el timer del siguiente ya empieza mostrando 10h en vez de 12h
      *  completas. */
     fun resolveOffer(context: Context, name: String) {
         val n = name.lowercase()
@@ -1434,11 +1441,11 @@ object PetState {
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
     }
 
-    /** DEBUG: fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 24h/48h -
+    /** DEBUG: fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 12h/24h -
      *  pedido explicito del usuario tras descartar sin querer un regalo real ("dame un regalo que
      *  le he dado a descartar sin querer"). Ancla el ciclo a "hace exactamente OFFER_INTERVAL_HOURS"
      *  (en vez de a 0L, que es un timestamp de 1970 - bug real que causó: al elegir/descartar esta
-     *  oferta forzada, offerAppearedAt() = 0 + 24h leía un ancla corrupta clavada en el pasado, y
+     *  oferta forzada, offerAppearedAt() = 0 + 12h leía un ancla corrupta clavada en el pasado, y
      *  offerCooldownRemainingMs devolvia 0 para siempre - el icono de regalo con el timer
      *  desaparecia sin mas, reportado por el usuario: "he recogido el regalo y ha desaparecido el
      *  icono de regalo con el timer") para que [maybeGenerateOffer] genere una de inmediato SIN
