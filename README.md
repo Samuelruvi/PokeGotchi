@@ -31,7 +31,7 @@ afiliación con ellos y no se distribuye con fines comerciales.
 
 ## Mazmorra
 
-<img src="docs/dungeon-screenshot.png" alt="Selector de Pokémon para la mazmorra" width="360">
+<img src="docs/dungeon-screenshot.png" alt="Sceptile explorando la mazmorra y encontrándose con un enemigo" width="360">
 
 Se abre desde el icono 🗺️ de la cabecera principal. El Pokémon que mandes explora piso a
 piso de forma automática (con animación en vivo si tienes la pantalla abierta, o en

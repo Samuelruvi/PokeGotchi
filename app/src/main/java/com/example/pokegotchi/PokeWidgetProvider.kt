@@ -70,6 +70,13 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_DUNGEON_BALANCE_SIM --es species sceptile --ei attempts 300
         const val ACTION_DEBUG_DUNGEON_BALANCE_SIM = "com.example.pokegotchi.ACTION_DEBUG_DUNGEON_BALANCE_SIM"
+        // SOLO PARA PRUEBAS: fuerza el fin del cierre global YA (sin esperar su duración real),
+        // para poder capturar la vista de exploración en vivo (ej. para una captura del README)
+        // sin tener que esperar minutos/horas. Reescribe cooldown_until al pasado y llama a
+        // resolveCooldownIfReady, mismo camino que usa el propio DungeonService cada ciclo.
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END
+        const val ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END = "com.example.pokegotchi.ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END"
         // SOLO PARA PRUEBAS (disparado a mano por adb): fuerza que aparezca una oferta de regalo
         // nueva de inmediato, sin esperar al ciclo de 24h/48h - pedido explicito del usuario tras
         // descartar sin querer un regalo real, ver PetState.forceNewOffer. Ejemplo:
@@ -369,6 +376,11 @@ class PokeWidgetProvider : AppWidgetProvider() {
             ACTION_DEBUG_DUNGEON_JUMP_FLOOR -> {
                 val floor = intent.getIntExtra("floor", -1)
                 if (floor > 0) DungeonSimulator.debugJumpToFloor(context, floor)
+            }
+            ACTION_DEBUG_DUNGEON_FORCE_COOLDOWN_END -> {
+                DungeonState.rewriteCooldownUntil(context, System.currentTimeMillis())
+                DungeonSimulator.resolveCooldownIfReady(context)
+                dbg(context, "mazmorra: cierre global forzado a terminar por debug")
             }
             ACTION_DEBUG_DUNGEON_BALANCE_SIM -> {
                 val species = intent.getStringExtra("species")?.trim()?.lowercase()

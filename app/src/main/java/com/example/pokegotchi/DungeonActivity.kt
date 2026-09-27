@@ -155,9 +155,14 @@ class DungeonActivity : AppCompatActivity() {
         dungeonView.listener = DungeonView.Listener { refreshRunSummaryText() }
     }
 
-    /** XP ganada/niveles simulados/objetos recogidos de la carrera EN CURSO - pedido explicito
-     *  del usuario en vez de avisos puntuales: "pon abajo un resumen de lo que has ganado y la
-     *  experiencia... asi empezamos a ver si esta nivelado o no, que items se estan usando". */
+    /** XP ganada/niveles/objetos recogidos de la carrera EN CURSO - pedido explicito del usuario
+     *  en vez de avisos puntuales: "pon abajo un resumen de lo que has ganado y la
+     *  experiencia... asi empezamos a ver si esta nivelado o no, que items se estan usando".
+     *  [DungeonState.simulatedLevel] ya coincide con el nivel real en PetState desde que
+     *  DungeonSimulator.APPLY_REAL_CANDY_XP esta en true (los caramelos aplican la XP real en el
+     *  mismo momento en que se recogen) - el texto decia "(simulado)" de cuando el flag estaba en
+     *  false y no se quito al activarlo; verificado en el propio dispositivo que el numero SI es
+     *  el real (run_start_xp+run_xp_gained coincide exactamente con el XP real guardado). */
     private fun refreshRunSummaryText() {
         val species = DungeonState.currentSpecies(this) ?: return
         val levelsGained = (DungeonState.simulatedLevel(this) - DungeonState.runStartLevel(this)).coerceAtLeast(0)
@@ -165,7 +170,7 @@ class DungeonActivity : AppCompatActivity() {
         // en la propia vista en vivo que, al acabar esta carrera, empezara otra sola.
         val repeatPrefix = if (DungeonState.autoRepeat(this)) "🔁 " else ""
         runSummaryText.text = "$repeatPrefix${PetState.displayLabel(species)} · +${DungeonState.runXpGained(this).toInt()} XP · " +
-            "$levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} (simulado) · " +
+            "$levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
             "${DungeonState.runItemsCollected(this)} objetos recogidos"
     }
 
