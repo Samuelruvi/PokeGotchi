@@ -63,6 +63,10 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
     private var phase = Phase.IDLE
     private var phaseStartAt = 0L
     private var running = false
+    // Duracion real del paso EN CURSO - MOVE_MS normalmente, MOVE_MS_CORRIDOR si tanto la casilla
+    // de origen como la de destino son pasillo estrecho (ver isCorridorTile). Se fija una vez al
+    // arrancar Phase.MOVING (Phase.IDLE en advance()) y no cambia hasta el siguiente paso.
+    private var currentMoveMs = MOVE_MS
 
     private val enemyDirections = HashMap<Int, DungeonSpriteRepository.Direction>()
     private var playerDirection = DungeonSpriteRepository.Direction.DOWN
@@ -103,26 +107,45 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
 
     companion object {
         private const val MOVE_MS = 350L
-        private const val PAUSE_EMPTY_MS = 80L
+        // Pasillo estrecho (1 casilla de ancho, recto) - pedido explicito del usuario: "si estas
+        // por un pasillo de estos de uno de ancho... el personaje vaya mas rapido... como en
+        // Mundo Misterioso... no lo hagas demasiado rapido porque puede quedar feo". ~1.6x, un
+        // salto notable pero comedido (ver isCorridorTile/currentMoveMs).
+        private const val MOVE_MS_CORRIDOR = 220L
+        // 0 (antes 80ms) - pedido explicito del usuario: "en vez de que vaya pasito a pasito, que
+        // vaya mas fluido". Un paso sin nada especial (sin objeto/escalera/combate) no necesita
+        // pausa de lectura como los demas (PAUSE_PICKUP_MS/PAUSE_STAIRS_MS, que SI se quedan igual
+        // para poder leer el efecto) - con esto a 0, Phase.RESOLVING pasa a Phase.IDLE en el
+        // siguiente fotograma (~16ms) y el siguiente paso arranca su propia interpolacion casi sin
+        // corte, dando una caminata continua en vez de avanzar-parar-avanzar.
+        private const val PAUSE_EMPTY_MS = 0L
         private const val PAUSE_PICKUP_MS = 700L
         private const val PAUSE_STAIRS_MS = 550L
         // Duracion TOTAL del combate animado repartida entre todos sus golpes (min/max por golpe
         // para que un combate de 2 golpes no se sienta instantaneo ni uno de 20 se eternice) -
-        // ver combatRoundMs, calculado por combate en advance().
-        private const val COMBAT_TOTAL_MS = 3200L
-        private const val COMBAT_ROUND_MIN_MS = 90L
-        private const val COMBAT_ROUND_MAX_MS = 320L
+        // ver combatRoundMs, calculado por combate en advance(). Subidos (pedido explicito del
+        // usuario: "ahora se pegan muy rapido y no esta claro quien pega a quien... me gustaria
+        // que quedara mas claro quien esta pegando a quien") tras acelerar el andar por pasillo -
+        // el combate no tenia por que notarse mas rapido, pero al ir el resto mas fluido se notaba
+        // mas el contraste.
+        private const val COMBAT_TOTAL_MS = 4200L
+        private const val COMBAT_ROUND_MIN_MS = 150L
+        private const val COMBAT_ROUND_MAX_MS = 480L
         private const val DEATH_FADE_MS = 480L
         // Pausa "se miran antes de atacar" (pedido explicito del usuario) antes de que arranque el
         // primer golpe - los dos ya estan mirandose (direcciones puestas en Phase.IDLE) pero
         // todavia no pierden vida.
         private const val COMBAT_FACEOFF_MS = 320L
-        private const val LUNGE_PX_DP = 11f
-        // Paso atras constante mientras dura el combate - pedido explicito del usuario: "el
-        // pokemon enemigo se queda en el mismo cuadrado que mi pokemon" (logicamente SI estan en
-        // la misma casilla - el combate se dispara al pisarla - pero sin esto los dos sprites
-        // quedan exactamente apilados).
-        private const val BATTLE_STANCE_DP = 15f
+        // Golpe hacia delante (va y vuelve) al atacar, como fraccion de tilePx - pedido explicito
+        // del usuario tras separar a cada combatiente en su propia casilla ("quiero que cada uno
+        // este en un cuadrado... se peguen cada uno desde su cuadrado"): ya no hace falta ningun
+        // paso atras (las casillas ya estan separadas de verdad), solo este empujon al golpear.
+        private const val COMBAT_LUNGE_FRACTION = 0.30f
+        // Tope defensivo de vueltas encadenadas dentro de UNA sola llamada a advance() - nunca
+        // deberia hacer falta en la practica (cada vuelta o bien avanza de fase o bien sale con
+        // `return`), red de seguridad para no congelar el hilo principal si algun caso futuro
+        // rompiera esa garantia.
+        private const val ADVANCE_MAX_CHAINED_PHASES = 25
     }
 
     // Paints de reserva SOLO por si el tile bitmap no se pudiera decodificar (ver
@@ -142,6 +165,13 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
     private val hudBarFront = Paint().apply { color = 0xFF3CD34C.toInt() }
     private val hudText = Paint().apply { color = 0xFFFFFFFF.toInt(); textSize = 14f * density; isAntiAlias = true }
     private val spriteRect = RectF()
+    // Destello rojo al recibir un golpe ("como en Minecraft", pedido explicito del usuario) - un
+    // PorterDuffColorFilter en modo SRC_ATOP sustituye todo pixel opaco del sprite por rojo solido
+    // conservando su alpha (la silueta exacta del sprite), en vez de teñir/mezclar el color
+    // original - efecto de "flash" limpio, no un tinte translucido.
+    private val hitFlashPaint = Paint().apply {
+        colorFilter = android.graphics.PorterDuffColorFilter(0xFFFF3B30.toInt(), android.graphics.PorterDuff.Mode.SRC_ATOP)
+    }
 
     // ---- barra de vida del enemigo en combate + texto flotante de daño/objetos ----
     private val enemyHpBack = Paint().apply { color = 0x99000000.toInt() }
@@ -322,83 +352,122 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         runState?.let { DungeonSimulator.persist(context, it) }
     }
 
+    /** Un tile cuenta como "pasillo estrecho" si, de sus 4 vecinos ortogonales, solo los DOS
+     *  opuestos en UN eje son transitables (izquierda+derecha sin arriba/abajo, o arriba/abajo
+     *  sin izquierda/derecha) - el patron geometrico exacto de un pasillo recto de 1 casilla de
+     *  ancho, distinto de una sala (se abre en mas de una direccion, o en una esquina/cruce) o de
+     *  un extremo sin salida. Pedido explicito del usuario: "un pasillo de estos de uno de
+     *  ancho... para no estar yendo a la misma velocidad que siempre cuando es una linea recta,
+     *  como hacen en Mundo Misterioso". */
+    private fun isCorridorTile(map: DungeonState.DungeonMap, x: Int, y: Int): Boolean {
+        val left = !map.isWall(x - 1, y)
+        val right = !map.isWall(x + 1, y)
+        val up = !map.isWall(x, y - 1)
+        val down = !map.isWall(x, y + 1)
+        return (left && right && !up && !down) || (up && down && !left && !right)
+    }
+
+    /** Pedido explicito del usuario: "que vaya caminando a la misma velocidad hasta que se
+     *  encuentra el enemigo o cualquier item" - un paso sin nada especial encadena DIRECTAMENTE
+     *  con el siguiente DENTRO de esta misma llamada (bucle) en vez de esperar a la vuelta
+     *  siguiente del frameTick: antes, incluso con PAUSE_EMPTY_MS=0, pasar por Phase.RESOLVING
+     *  para volver a Phase.IDLE costaba fotogramas aparte en los que el sprite se dibujaba
+     *  parado (moveProgress() devuelve 1f fuera de Phase.MOVING) - un "parón" breve pero real en
+     *  cada casilla. Con el bucle, esa transicion ocurre entera en la misma llamada y el siguiente
+     *  Phase.MOVING arranca con el mismo `now`, sin ningun fotograma parado entre medias. Pickup/
+     *  Stairs/Combat siguen pausando exactamente igual que antes (sus `return` cortan el bucle). */
     private fun advance() {
         val r = runState ?: return
         val sp = species ?: return
-        val now = System.currentTimeMillis()
-        when (phase) {
-            Phase.IDLE -> {
-                val mapBeforeStep = r.map
-                val itemsBefore = mapBeforeStep.items.toList()
-                val step = DungeonSimulator.stepOnce(context, sp, shiny, r)
-                currentStep = step
-                renderMap = mapBeforeStep
-                updateDirections(step)
-                val outcome = step.outcome
-                // Cualquier objeto que no estuviera antes de este paso (botin de jefe) se queda
-                // fuera del dibujado normal hasta que la animacion de combate termine - ver
-                // comentario de pendingLootItems.
-                pendingLootItems = r.map.items.filterNot { it in itemsBefore }
-                DungeonSimulator.recordDecorPickup(context, outcome)
-                if (outcome is DungeonSimulator.Outcome.Combat) {
-                    // Snapshot del enemigo AQUI MISMO (no al terminar la animacion de
-                    // acercamiento) - stepOnce ya ha resuelto el combate entero y, si se gana, ya
-                    // ha quitado al enemigo de map.enemies en este mismo instante; capturarlo mas
-                    // tarde dejaba un hueco visible sin el enemigo antes de que arrancase su propia
-                    // animacion de muerte - bug real reportado por el usuario ("veo que primero el
-                    // pokemon desaparece y luego salta la animacion de morir").
-                    combatEnemyId = outcome.enemy.id
-                    combatEnemySnapshot = outcome.enemy
-                    combatRounds = outcome.rounds
-                    combatEnemyMaxHp = outcome.enemyMaxHp.coerceAtLeast(1f)
-                    combatWon = outcome.won
-                    combatRoundMs = (COMBAT_TOTAL_MS / outcome.rounds.size.coerceAtLeast(1))
-                        .coerceIn(COMBAT_ROUND_MIN_MS, COMBAT_ROUND_MAX_MS)
-                    // Se miran de frente antes de golpearse - pedido explicito del usuario: "que
-                    // los pokemon se miren antes de atacar". El jugador ya queda mirando hacia el
-                    // enemigo (updateDirections, misma direccion en la que se movio para llegar
-                    // hasta el), el enemigo se gira a mirarlo a EL.
-                    val dx = step.toX - step.fromX; val dy = step.toY - step.fromY
-                    if (dx != 0 || dy != 0) enemyDirections[outcome.enemy.id] = directionFor(-dx, -dy)
-                }
-                DungeonSimulator.persist(context, r)
-                if (outcome is DungeonSimulator.Outcome.Finished) {
-                    running = false
-                    DungeonSimulator.finishRun(context, sp, { "completó la mazmorra entera" }, DungeonState::returnFinished)
-                    onRunEnded?.invoke()
-                    return
-                }
-                phase = Phase.MOVING
-                phaseStartAt = now
-            }
-            Phase.MOVING -> {
-                if (now - phaseStartAt >= MOVE_MS) {
-                    val outcome = currentStep?.outcome
-                    if (outcome is DungeonSimulator.Outcome.Stairs) renderMap = r.map
-                    phase = Phase.RESOLVING
-                    phaseStartAt = now
-                    if (outcome != null) listener?.onStepResolved(outcome)
-                    if (outcome is DungeonSimulator.Outcome.Defeated) {
+        var guard = 0
+        while (guard++ < ADVANCE_MAX_CHAINED_PHASES) {
+            val now = System.currentTimeMillis()
+            when (phase) {
+                Phase.IDLE -> {
+                    val mapBeforeStep = r.map
+                    val itemsBefore = mapBeforeStep.items.toList()
+                    val step = DungeonSimulator.stepOnce(context, sp, shiny, r)
+                    currentStep = step
+                    renderMap = mapBeforeStep
+                    updateDirections(step)
+                    val outcome = step.outcome
+                    // Cualquier objeto que no estuviera antes de este paso (botin de jefe) se
+                    // queda fuera del dibujado normal hasta que la animacion de combate termine -
+                    // ver comentario de pendingLootItems.
+                    pendingLootItems = r.map.items.filterNot { it in itemsBefore }
+                    DungeonSimulator.recordDecorPickup(context, outcome)
+                    if (outcome is DungeonSimulator.Outcome.Combat) {
+                        // Snapshot del enemigo AQUI MISMO (no al terminar la animacion de
+                        // acercamiento) - stepOnce ya ha resuelto el combate entero y, si se gana,
+                        // ya ha quitado al enemigo de map.enemies en este mismo instante;
+                        // capturarlo mas tarde dejaba un hueco visible sin el enemigo antes de que
+                        // arrancase su propia animacion de muerte - bug real reportado por el
+                        // usuario ("veo que primero el pokemon desaparece y luego salta la
+                        // animacion de morir").
+                        combatEnemyId = outcome.enemy.id
+                        combatEnemySnapshot = outcome.enemy
+                        combatRounds = outcome.rounds
+                        combatEnemyMaxHp = outcome.enemyMaxHp.coerceAtLeast(1f)
+                        combatWon = outcome.won
+                        combatRoundMs = (COMBAT_TOTAL_MS / outcome.rounds.size.coerceAtLeast(1))
+                            .coerceIn(COMBAT_ROUND_MIN_MS, COMBAT_ROUND_MAX_MS)
+                        // Se miran de frente antes de golpearse - pedido explicito del usuario:
+                        // "que los pokemon se miren antes de atacar". El jugador ya queda mirando
+                        // hacia el enemigo (updateDirections, misma direccion en la que se movio
+                        // para llegar hasta el), el enemigo se gira a mirarlo a EL.
+                        val dx = step.toX - step.fromX; val dy = step.toY - step.fromY
+                        if (dx != 0 || dy != 0) enemyDirections[outcome.enemy.id] = directionFor(-dx, -dy)
+                    }
+                    DungeonSimulator.persist(context, r)
+                    if (outcome is DungeonSimulator.Outcome.Finished) {
                         running = false
-                        DungeonSimulator.finishRun(context, sp, { f -> "cayó en el piso $f" }, DungeonState::returnDefeated)
+                        DungeonSimulator.finishRun(context, sp, { "completó la mazmorra entera" }, DungeonState::returnFinished)
                         onRunEnded?.invoke()
                         return
                     }
+                    // Pasillo estrecho solo si ORIGEN Y DESTINO de este paso concreto son los dos
+                    // pasillo (ver isCorridorTile) - si el paso entra o sale de una sala, se queda
+                    // a velocidad normal, evitando un cambio de ritmo brusco justo en el umbral.
+                    currentMoveMs = if (isCorridorTile(mapBeforeStep, step.fromX, step.fromY) &&
+                        isCorridorTile(mapBeforeStep, step.toX, step.toY)) MOVE_MS_CORRIDOR else MOVE_MS
+                    phase = Phase.MOVING
+                    phaseStartAt = now
+                    // Sigue en el bucle: Phase.MOVING comprueba el tiempo real ya mismo (0ms
+                    // transcurridos) y sale con `return` a esperar al fotograma siguiente.
                 }
-            }
-            Phase.RESOLVING -> {
-                val outcome = currentStep?.outcome
-                if (outcome is DungeonSimulator.Outcome.Combat) {
-                    val roundsMs = combatRounds.size * combatRoundMs
-                    val total = COMBAT_FACEOFF_MS + roundsMs + if (combatWon) DEATH_FADE_MS else 0L
-                    if (now - phaseStartAt >= total) phase = Phase.IDLE
-                } else {
-                    val pause = when (outcome) {
-                        is DungeonSimulator.Outcome.Pickup -> PAUSE_PICKUP_MS
-                        is DungeonSimulator.Outcome.Stairs -> PAUSE_STAIRS_MS
-                        else -> PAUSE_EMPTY_MS
+                Phase.MOVING -> {
+                    if (now - phaseStartAt >= currentMoveMs) {
+                        val outcome = currentStep?.outcome
+                        if (outcome is DungeonSimulator.Outcome.Stairs) renderMap = r.map
+                        phase = Phase.RESOLVING
+                        phaseStartAt = now
+                        if (outcome != null) listener?.onStepResolved(outcome)
+                        if (outcome is DungeonSimulator.Outcome.Defeated) {
+                            running = false
+                            DungeonSimulator.finishRun(context, sp, { f -> "cayó en el piso $f" }, DungeonState::returnDefeated)
+                            onRunEnded?.invoke()
+                            return
+                        }
+                        // Sigue en el bucle: Phase.RESOLVING decide si hace falta pausa de verdad
+                        // o si puede volver a Phase.IDLE ya mismo (paso vacio, PAUSE_EMPTY_MS=0).
+                    } else {
+                        return
                     }
-                    if (now - phaseStartAt >= pause) phase = Phase.IDLE
+                }
+                Phase.RESOLVING -> {
+                    val outcome = currentStep?.outcome
+                    if (outcome is DungeonSimulator.Outcome.Combat) {
+                        val roundsMs = combatRounds.size * combatRoundMs
+                        val total = COMBAT_FACEOFF_MS + roundsMs + if (combatWon) DEATH_FADE_MS else 0L
+                        if (now - phaseStartAt >= total) phase = Phase.IDLE else return
+                    } else {
+                        val pause = when (outcome) {
+                            is DungeonSimulator.Outcome.Pickup -> PAUSE_PICKUP_MS
+                            is DungeonSimulator.Outcome.Stairs -> PAUSE_STAIRS_MS
+                            else -> PAUSE_EMPTY_MS
+                        }
+                        if (now - phaseStartAt >= pause) phase = Phase.IDLE else return
+                    }
                 }
             }
         }
@@ -423,7 +492,7 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
     private fun moveProgress(): Float {
         if (phase != Phase.MOVING) return 1f
         val now = System.currentTimeMillis()
-        return ((now - phaseStartAt).toFloat() / MOVE_MS).coerceIn(0f, 1f)
+        return ((now - phaseStartAt).toFloat() / currentMoveMs).coerceIn(0f, 1f)
     }
 
     /** Posicion interpolada de un enemigo concreto para ESTE fotograma - compartida por los dos
@@ -443,8 +512,20 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         val t = moveProgress()
         val step = currentStep
 
+        // Combate: jugador y enemigo se quedan CADA UNO en su propia casilla (pedido explicito
+        // del usuario: "quiero que cada uno este en un cuadrado... no que se queden dentro de un
+        // mismo cuadrado y se peguen ahi, da incita a bugs visuales") - el modelo de simulacion
+        // SI mueve al jugador a la casilla del enemigo al resolver el paso (stepOnce, run.px/py),
+        // pero mientras dure la animacion de combate (acercamiento Y golpes) se dibuja al
+        // jugador quieto en la casilla de ORIGEN (step.fromX/fromY) en vez de interpolar hacia
+        // la del enemigo - el enemigo ya se dibuja en la suya propia (enemy.x/y = step.toX/toY,
+        // ver drawCombatEnemy). Una casilla entera de separacion real, no un empujon en pixeles
+        // dentro de la misma casilla compartida.
+        val inCombatAnim = step?.outcome is DungeonSimulator.Outcome.Combat && phase != Phase.IDLE
         val playerTx: Float; val playerTy: Float
-        if (step != null && phase == Phase.MOVING) {
+        if (inCombatAnim) {
+            playerTx = step!!.fromX.toFloat(); playerTy = step.fromY.toFloat()
+        } else if (step != null && phase == Phase.MOVING) {
             playerTx = step.fromX + (step.toX - step.fromX) * t
             playerTy = step.fromY + (step.toY - step.fromY) * t
         } else {
@@ -458,7 +539,7 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         val topH = remaining * topPanelFraction
         val bottomH = remaining - topH
 
-        drawTopPanel(canvas, map, sp, step, t, playerTx, playerTy, hudH, viewW, topH)
+        drawTopPanel(canvas, map, sp, r, step, t, playerTx, playerTy, hudH, viewW, topH)
         canvas.drawRect(0f, hudH + topH, viewW, hudH + topH + dividerH, dividerPaint)
         drawMinimapPanel(canvas, map, step, t, playerTx, playerTy, hudH + topH + dividerH, viewW, bottomH)
         drawHud(canvas, sp, r, viewW, hudH)
@@ -467,7 +548,7 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
     /** Panel de arriba: camara de cerca siguiendo al explorador, sprites reales - igual que la
      *  version de un solo panel de antes, solo que acotada a la region [top, top+panelH]. */
     private fun drawTopPanel(
-        canvas: Canvas, map: DungeonState.DungeonMap, sp: String, step: DungeonSimulator.StepResult?,
+        canvas: Canvas, map: DungeonState.DungeonMap, sp: String, r: DungeonSimulator.RunState, step: DungeonSimulator.StepResult?,
         t: Float, playerTx: Float, playerTy: Float, top: Float, panelW: Float, panelH: Float
     ) {
         canvas.save()
@@ -543,7 +624,22 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         // invisible durante todo el combate. Con enemigos normales (mismo tamaño que el jugador,
         // ya bien separados por combatantOffset) el orden no se nota.
         if (combatActive) drawCombatEnemy(canvas, playerTx, playerTy)
-        drawSpriteAt(canvas, DungeonSpriteRepository.frames(context, sp, shiny, playerDirection), t, playerTx, playerTy, playerOffX, playerOffY)
+        drawSpriteAt(canvas, DungeonSpriteRepository.frames(context, sp, shiny, playerDirection), t, playerTx, playerTy, playerOffX, playerOffY, hitFlash = isReceivingHit(playerSide = true))
+        // Barra de vida del jugador SIEMPRE visible (pedido explicito del usuario - primero pidio
+        // que solo apareciera en combate, como el enemigo, pero luego cambio de opinion: "prefiero
+        // que este siempre visible... asi puedo ver si esta subiendo la vida con el tiempo o
+        // cuanto sube cuando recojo un item de curacion" - fuera de combate, displayedPlayerHp ya
+        // devuelve r.hp tal cual, que SI refleja la curacion pasiva cada 3 pasos y la de objetos en
+        // cuanto stepOnce los aplica) - flota sobre su propia casilla igual que la del enemigo
+        // (drawHpBarAbove), en verde (hudBarFront) en vez del rojo del enemigo (enemyHpFront) para
+        // distinguir de un vistazo quien es quien. El jugador se dibuja SIEMPRE el ultimo (ver
+        // comentario de arriba), asi que su propia barra nunca puede quedar tapada por el enemigo -
+        // no hace falta el mismo ajuste de "debajo" que tiene la del enemigo.
+        run {
+            val maxHp = DungeonSimulator.maxHp(context, sp, shiny).coerceAtLeast(1)
+            val hpFrac = (displayedPlayerHp(r) / maxHp.toFloat()).coerceIn(0f, 1f)
+            drawHpBarAbove(canvas, playerTx, playerTy, hpFrac, front = hudBarFront)
+        }
         (currentStep?.outcome as? DungeonSimulator.Outcome.Pickup)?.let { outcome ->
             if (phase == Phase.RESOLVING) drawFloatingText(canvas, outcome.effectText, playerTx, playerTy, pickupTextPaint)
         }
@@ -595,22 +691,18 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         DungeonSpriteRepository.Direction.UP -> 0f to -magnitudePx
     }
 
-    /** Desplazamiento visual de un combatiente respecto al centro de SU casilla: un paso hacia
-     *  atras constante (pedido explicito del usuario: "el pokemon enemigo se queda en el mismo
-     *  cuadrado que mi pokemon" - las dos casillas son la MISMA en el modelo, asi que sin esto los
-     *  dos sprites quedan exactamente apilados) mas, si le toca atacar AHORA, un golpe hacia
-     *  delante que va y vuelve ([lungeFactor]). */
-    // [stanceScale] - un jefe (sprite BOSS_SPRITE_SCALE veces mas grande) necesita mas paso atras
-    // para que el jugador no quede tapado dentro de su silueta, mucho mayor que la de un enemigo
-    // normal - extraPx crece con cuanto MAS RADIO tiene el sprite escalado sobre uno normal (radio
-    // normal = tilePx*0.55, ver drawSpriteAt) y se aplica a los DOS combatientes por igual (mismo
-    // "ring" de combate, mas grande). A 1f (cualquier enemigo normal) extraPx da 0 y queda
-    // exactamente igual que antes.
+    /** Desplazamiento visual de un combatiente respecto al centro de SU PROPIA casilla - ya NO
+     *  hace falta un "paso atras" constante (pedido explicito del usuario: "quiero que cada uno
+     *  este en un cuadrado... no que se queden dentro de un mismo cuadrado", ver [inCombatAnim]
+     *  en onDraw - jugador y enemigo ya se dibujan en dos casillas distintas de verdad, una
+     *  separacion real, no un empujon en pixeles). Solo queda el golpe hacia delante que va y
+     *  vuelve cuando le toca atacar ([lungeFactor]), como fraccion de tilePx para que se vea
+     *  proporcionado sea cual sea la densidad de pantalla. [stanceScale] (jefe = mas grande) le da
+     *  un golpe un poco mas largo, a juego con su silueta mayor. */
     private fun combatantOffset(dir: DungeonSpriteRepository.Direction, isActing: Boolean, roundProgress: Float, stanceScale: Float = 1f): Pair<Float, Float> {
-        val extraPx = (stanceScale - 1f) * tilePx * 0.55f
-        val stancePx = -(BATTLE_STANCE_DP * density + extraPx)
-        val lungePx = if (isActing) lungeFactor(roundProgress) * (LUNGE_PX_DP * density) else 0f
-        return battleOffsetPx(dir, stancePx + lungePx)
+        if (!isActing) return 0f to 0f
+        val lungePx = lungeFactor(roundProgress) * tilePx * COMBAT_LUNGE_FRACTION * (0.85f + stanceScale * 0.15f)
+        return battleOffsetPx(dir, lungePx)
     }
 
     /** El enemigo en combate SIEMPRE se dibuja desde [combatEnemySnapshot] (nunca desde
@@ -646,10 +738,15 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         val idx = currentCombatRoundIdx()
         val isActing = idx >= 0 && !combatRounds[idx].playerActs
         val (offX, offY) = combatantOffset(dir, isActing, combatRoundProgress(idx), scale)
-        drawSpriteAt(canvas, frames, 0f, ex, ey, offX, offY, scale)
+        drawSpriteAt(canvas, frames, 0f, ex, ey, offX, offY, scale, hitFlash = isReceivingHit(playerSide = false))
 
+        // El enemigo esta al SUR del jugador (una casilla justo debajo) - "encima del enemigo"
+        // caeria sobre la casilla del jugador, que se dibuja despues y la taparia (bug real
+        // reportado por el usuario). En ese caso, la barra/texto del enemigo van DEBAJO en su
+        // lugar.
+        val enemyBelowPlayer = ey > playerTy
         val hpNow = if (idx >= 0) combatRounds[idx].enemyHpAfter else combatEnemyMaxHp
-        drawHpBarAbove(canvas, ex, ey, hpNow / combatEnemyMaxHp, scale)
+        drawHpBarAbove(canvas, ex, ey, hpNow / combatEnemyMaxHp, scale, below = enemyBelowPlayer)
         if (idx >= 0) {
             val round = combatRounds[idx]
             // "¡Te falla!" sonaba raro - pedido explicito del usuario: "cuando falla en vez de
@@ -662,23 +759,37 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
                 else if (round.effectiveness < 1f) "Poco eficaz... -${round.damage.toInt()}"
                 else if (round.critical) "¡Crítico! -${round.damage.toInt()}"
                 else "-${round.damage.toInt()}"
-            val (tx, ty) = if (round.playerActs) ex to ey else playerTx to playerTy
-            drawFloatingText(canvas, text, tx, ty, if (round.critical) criticalTextPaint else damageTextPaint)
+            // El texto del GOLPE DEL JUGADOR (recibido por el enemigo) tambien va debajo si el
+            // enemigo esta al sur, mismo motivo que la barra - debajo de ESA barra, no a la misma
+            // altura, para que no se solapen entre si. El texto de un golpe del ENEMIGO (recibido
+            // por el jugador) no necesita este ajuste - "encima del jugador" nunca cae sobre el
+            // enemigo (queda mas lejos, hacia el norte).
+            if (round.playerActs) {
+                drawFloatingText(canvas, text, ex, ey, if (round.critical) criticalTextPaint else damageTextPaint, below = enemyBelowPlayer)
+            } else {
+                drawFloatingText(canvas, text, playerTx, playerTy, if (round.critical) criticalTextPaint else damageTextPaint)
+            }
         }
     }
 
-    private fun drawHpBarAbove(canvas: Canvas, tx: Float, ty: Float, frac: Float, scale: Float = 1f) {
+    // [below] - pedido explicito del usuario: "cuando el enemigo esta debajo del Pokemon... mi
+    // Pokemon tapa la barra" - jugador y enemigo estan una casilla separados (ver isCombatAnim en
+    // onDraw), asi que "encima del enemigo" cae justo sobre la casilla del jugador cuando el
+    // enemigo esta al SUR (el jugador se dibuja despues, tapando la barra/texto) - en ese caso se
+    // dibuja DEBAJO del enemigo en su lugar (lejos del jugador). Ver drawCombatEnemy, que decide
+    // cuando hace falta.
+    private fun drawHpBarAbove(canvas: Canvas, tx: Float, ty: Float, frac: Float, scale: Float = 1f, below: Boolean = false, front: Paint = enemyHpFront) {
         val cx = tx * tilePx + tilePx / 2f
-        val topY = ty * tilePx - 6f * density * scale
         val w = tilePx * 0.7f * scale; val h = 5f * density
         val l = cx - w / 2f
-        canvas.drawRect(l, topY - h, l + w, topY, enemyHpBack)
-        canvas.drawRect(l, topY - h, l + w * frac.coerceIn(0f, 1f), topY, enemyHpFront)
+        val top = if (below) (ty + 1f) * tilePx + 6f * density * scale else ty * tilePx - 6f * density * scale - h
+        canvas.drawRect(l, top, l + w, top + h, enemyHpBack)
+        canvas.drawRect(l, top, l + w * frac.coerceIn(0f, 1f), top + h, front)
     }
 
-    private fun drawFloatingText(canvas: Canvas, text: String, tx: Float, ty: Float, paint: Paint) {
+    private fun drawFloatingText(canvas: Canvas, text: String, tx: Float, ty: Float, paint: Paint, below: Boolean = false) {
         val cx = tx * tilePx + tilePx / 2f
-        val cy = ty * tilePx - 14f * density
+        val cy = if (below) (ty + 1f) * tilePx + 20f * density else ty * tilePx - 14f * density
         canvas.drawText(text, cx - paint.measureText(text) / 2f, cy, paint)
     }
 
@@ -763,20 +874,22 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         return if (idx >= 0) combatRounds[idx].playerHpAfter else outcome.startHp
     }
 
+    // Pedido explicito del usuario: "pon la barra de vida de mi Pokemon como las de los enemigos,
+    // pero en verde, y asi lo quitas de la parte de arriba a la derecha y pones ahi la X" - la
+    // barra ya NO vive en el HUD (dejaba muy poco sitio a la X, que se salia del HUD estrecho y
+    // tapaba mitad barra/mitad gameplay); ahora flota sobre el propio sprite del jugador en el
+    // panel de arriba, igual que hace drawCombatEnemy con la del enemigo (ver drawTopPanel).
     private fun drawHud(canvas: Canvas, sp: String, r: DungeonSimulator.RunState, viewW: Float, hudH: Float) {
-        val maxHp = DungeonSimulator.maxHp(context, sp, shiny).coerceAtLeast(1)
-        val hpFrac = (displayedPlayerHp(r) / maxHp.toFloat()).coerceIn(0f, 1f)
         canvas.drawRect(0f, 0f, viewW, hudH, hudBg)
         canvas.drawText("${PetState.displayLabel(sp)} · Piso ${r.floor}/${DungeonState.MAX_FLOOR}", 8f * density, hudH * 0.65f, hudText)
-        val barX = viewW - 110f * density; val barW = 100f * density
-        canvas.drawRect(barX, hudH * 0.25f, barX + barW, hudH * 0.75f, hudBarBack)
-        canvas.drawRect(barX, hudH * 0.25f, barX + barW * hpFrac, hudH * 0.75f, hudBarFront)
     }
 
     // [scale] - "mas grande" pedido explicito del usuario para los jefes (DungeonSimulator.
     // BOSS_SPRITE_SCALE) sobre el tamaño normal de sprite (0.55 de tilePx de radio); 1f para
-    // cualquier sprite normal (jugador, enemigo raso).
-    private fun drawSpriteAt(canvas: Canvas, frames: List<Bitmap>?, t: Float, tx: Float, ty: Float, offsetX: Float = 0f, offsetY: Float = 0f, scale: Float = 1f) {
+    // cualquier sprite normal (jugador, enemigo raso). [hitFlash] - pedido explicito del usuario
+    // ("que el sprite se vuelva completamente rojo cuando recibe daño, como en Minecraft"), ver
+    // [isReceivingHit].
+    private fun drawSpriteAt(canvas: Canvas, frames: List<Bitmap>?, t: Float, tx: Float, ty: Float, offsetX: Float = 0f, offsetY: Float = 0f, scale: Float = 1f, hitFlash: Boolean = false) {
         if (frames.isNullOrEmpty()) return
         val idx = if (phase == Phase.MOVING) (t * frames.size).toInt().coerceIn(0, frames.size - 1) else 0
         val bmp = frames[idx]
@@ -784,6 +897,23 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         val cy = ty * tilePx + tilePx / 2f + offsetY
         val half = tilePx * 0.55f * scale
         spriteRect.set(cx - half, cy - half, cx + half, cy + half)
-        canvas.drawBitmap(bmp, null, spriteRect, null)
+        canvas.drawBitmap(bmp, null, spriteRect, if (hitFlash) hitFlashPaint else null)
+    }
+
+    /** true si [playerSide] (jugador si true, enemigo si false) es quien esta recibiendo el golpe
+     *  ACTUAL de combate ahora mismo - pedido explicito del usuario: "no esta claro quien pega a
+     *  quien... que el sprite se vuelva completamente rojo cuando recibe daño". Solo durante la
+     *  franja central del golpe (coincide con el pico del lunge, ver [lungeFactor]) y nunca si el
+     *  golpe fallo (round.missed) - fallar no reparte daño, un flash ahi seria enganoso. */
+    private fun isReceivingHit(playerSide: Boolean): Boolean {
+        if (phase != Phase.RESOLVING) return false
+        val idx = currentCombatRoundIdx()
+        if (idx < 0) return false
+        val round = combatRounds[idx]
+        if (round.missed) return false
+        val hitIsPlayer = !round.playerActs
+        if (hitIsPlayer != playerSide) return false
+        val progress = combatRoundProgress(idx)
+        return progress in 0.25f..0.6f
     }
 }

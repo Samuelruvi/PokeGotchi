@@ -321,25 +321,39 @@ object DungeonSimulator {
         )
     }
 
-    /** Especie del jefe - SIEMPRE legendario/mitico (rareSortedCache, ~96 especies) - pedido
-     *  explicito del usuario: "creo que los bosses tienen que ser legendarios, pero que tengan
-     *  sentido segun el piso y que no puedan salir en pisos normales". Mismo mecanismo de ventana
-     *  deslizante que [pickEnemySpecies] pero sobre el roster legendario en vez del normal - piso
-     *  10 (primer jefe) toca los legendarios mas flojos del pool, piso 100 los mas fuertes. La
-     *  ventana AHORA se estrecha con la profundidad (10%->6%) igual que en [pickEnemySpecies] -
-     *  antes era fija (8%), asimetria detectada en el repaso integral sin motivo real para que
-     *  los dos mecanismos "iguales" se comportaran distinto; endurecimiento MARGINAL (menos
-     *  varianza de que legendario concreto toca, no mas potencia por nivel/HP/ataque). */
+    // Lista CERRADA de jefes por piso - pedido explicito del usuario: "quiero que elijamos ya una
+    // lista cerrada de legendarios por piso y se quede esos Pokemon" (sustituye a la ventana
+    // deslizante anterior, que recalculaba el reparto en runtime a partir del roster ordenado por
+    // poder). Repartidos a mano entre el usuario y yo: los 96 legendarios/miticos marcados "rare"
+    // en evolutions.json, MENOS ursaluna-bloodmoon (confirmado con Bulbapedia que no es legendario/
+    // mitico oficial - es solo una forma especial del DLC Teal Mask, dato verificado por
+    // WebSearch, no una suposicion), repartidos en 10 tramos contiguos de ~9-10 especies cada uno,
+    // ordenados por el MISMO "poder" que ya usa buildPowerRoster (hp+speed+defense+max(ataque,
+    // ataque especial) - BaseStats.attack ya toma ese maximo al cargar base_stats.json, ver
+    // baseStatsTable) - piso 10 el tramo mas flojo, piso 100 el mas fuerte. Phione y Type: Null/
+    // Silvally SI se quedan (confirmado con WebSearch que ambos son legendario/mitico oficial pese
+    // a la duda inicial - Phione es Mitico, Type: Null/Silvally son Legendarios).
+    private val BOSS_ROSTER: Map<Int, List<String>> = mapOf(
+        10 to listOf("cosmog", "meltan", "cosmoem", "kubfu", "terapagos", "phione", "regice", "calyrex", "type-null", "diancie"),
+        20 to listOf("wo-chien", "registeel", "hoopa", "fezandipiti", "virizion", "tapu-fini", "articuno", "mesprit", "tapu-lele", "chi-yu"),
+        30 to listOf("uxie", "silvally", "azelf", "tornadus", "thundurus", "genesect", "enamorus", "suicune", "latias", "cresselia"),
+        40 to listOf("tapu-bulu", "magearna", "munkidori", "ogerpon", "moltres", "raikou", "meloetta", "zapdos", "mew", "celebi"),
+        50 to listOf("latios", "jirachi", "deoxys", "manaphy", "shaymin", "victini", "volcanion", "tapu-koko", "heatran", "necrozma"),
+        60 to listOf("landorus", "glastrier", "okidogi", "entei", "chien-pao", "ho-oh", "cobalion", "terrakion", "keldeo"),
+        70 to listOf("zeraora", "darkrai", "marshadow", "zygarde", "pecharunt", "urshifu", "urshifu-rapid", "regirock", "kyogre"),
+        80 to listOf("regieleki", "regidrago", "zarude", "spectrier", "ting-lu", "lugia", "rayquaza", "palkia", "reshiram"),
+        90 to listOf("kyurem", "xerneas", "yveltal", "melmetal", "dialga", "giratina", "zekrom", "lunala", "zacian"),
+        100 to listOf("zamazenta", "miraidon", "solgaleo", "mewtwo", "groudon", "regigigas", "arceus", "koraidon", "eternatus"),
+    )
+
+    /** Especie del jefe - SIEMPRE de la lista cerrada de [BOSS_ROSTER] para ESE piso exacto (nunca
+     *  fuera de ella) - pedido explicito del usuario tras el rediseño de arriba. Dentro del tramo,
+     *  sigue habiendo sorteo (no siempre el mismo jefe en cada visita a ese piso) y se sigue
+     *  rebajando el peso de quien pegue supereficaz contra el jugador (ver [weightedSpeciesPick],
+     *  mismo mecanismo que [pickEnemySpecies]). */
     private fun pickBossSpecies(context: Context, floor: Int, playerSpecies: String): String {
-        buildPowerRoster(context)
-        val sorted = rareSortedCache
-        if (sorted.isNullOrEmpty()) return allSpeciesNames(context).random()
-        val progress = (floor.toFloat() / DungeonState.MAX_FLOOR).coerceIn(0f, 1f)
-        val center = (progress * (sorted.size - 1)).toInt()
-        val window = (sorted.size * lerp(0.10f, 0.06f, progress)).toInt().coerceAtLeast(4)
-        val lo = (center - window).coerceAtLeast(0)
-        val hi = (center + window).coerceAtMost(sorted.size - 1)
-        return weightedSpeciesPick(context, sorted, lo, hi, playerSpecies)
+        val pool = BOSS_ROSTER[floor] ?: return allSpeciesNames(context).random()
+        return weightedSpeciesPick(context, pool, 0, pool.size - 1, playerSpecies)
     }
 
     /** Botin al derrotar un jefe - pedido explicito del usuario: "cuando muere aparecera
@@ -782,28 +796,26 @@ object DungeonSimulator {
     // rama desaparece del todo de [pickEnemySpecies] - la unica puerta de entrada de un legendario
     // es [pickBossSpecies].
     @Volatile private var powerSortedCache: List<String>? = null // ascendente por poder, sin legendarios/miticos
-    @Volatile private var rareSortedCache: List<String>? = null // ascendente por poder, SOLO legendarios/miticos
 
+    // Legendarios/miticos ("rare"=true) EXCLUIDOS del roster normal - su unica puerta de entrada
+    // ahora es la lista cerrada [BOSS_ROSTER] (ya no se ordenan/usan en runtime como antes).
     private fun buildPowerRoster(context: Context) {
         if (powerSortedCache != null) return
         val stats = baseStatsTable(context)
-        val rareScored = ArrayList<Pair<String, Int>>()
         val scored = ArrayList<Pair<String, Int>>(stats.size)
         for (name in stats.keys) {
+            if (PetState.evolutionInfo(context, name)?.rare == true) continue
             val s = stats.getValue(name)
             val power = s.hp + s.speed + s.defense + s.attack
-            if (PetState.evolutionInfo(context, name)?.rare == true) rareScored.add(name to power)
-            else scored.add(name to power)
+            scored.add(name to power)
         }
         scored.sortBy { it.second }
-        rareScored.sortBy { it.second }
         powerSortedCache = scored.map { it.first }
-        rareSortedCache = rareScored.map { it.first }
     }
 
     /** Especie de un enemigo nuevo, coherente con [floor]: cuanto mas hondo, mas "poder" (suma
-     *  hp+speed+defense+attack). Nunca legendarios/miticos aqui (ver comentario de
-     *  rareSortedCache) - Primera estimacion (banda de variedad del 12% del roster alrededor del
+     *  hp+speed+defense+attack). Nunca legendarios/miticos aqui (su unica puerta de entrada es
+     *  [BOSS_ROSTER]) - Primera estimacion (banda de variedad del 12% del roster alrededor del
      *  punto que toque), a tunear jugando. */
     private fun pickEnemySpecies(context: Context, floor: Int, playerSpecies: String): String {
         buildPowerRoster(context)
