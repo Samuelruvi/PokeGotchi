@@ -615,7 +615,9 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
             val idx = currentCombatRoundIdx()
             val isActing = idx >= 0 && combatRounds[idx].playerActs
             val stanceScale = if (combatEnemySnapshot?.isBoss == true) DungeonSimulator.BOSS_SPRITE_SCALE else 1f
-            val (ox, oy) = combatantOffset(playerDirection, isActing, combatRoundProgress(idx), stanceScale)
+            val enemy = combatEnemySnapshot
+            val (dx, dy) = if (enemy != null) (enemy.x - playerTx) to (enemy.y - playerTy) else 0f to 0f
+            val (ox, oy) = combatLungeOffset(dx, dy, isActing, combatRoundProgress(idx), stanceScale)
             playerOffX = ox; playerOffY = oy
         }
         // El enemigo en combate se dibuja ANTES que el jugador (no despues, como hasta ahora) -
@@ -684,25 +686,32 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         else -> 0f
     }
 
-    private fun battleOffsetPx(dir: DungeonSpriteRepository.Direction, magnitudePx: Float): Pair<Float, Float> = when (dir) {
-        DungeonSpriteRepository.Direction.RIGHT -> magnitudePx to 0f
-        DungeonSpriteRepository.Direction.LEFT -> -magnitudePx to 0f
-        DungeonSpriteRepository.Direction.DOWN -> 0f to magnitudePx
-        DungeonSpriteRepository.Direction.UP -> 0f to -magnitudePx
-    }
-
     /** Desplazamiento visual de un combatiente respecto al centro de SU PROPIA casilla - ya NO
      *  hace falta un "paso atras" constante (pedido explicito del usuario: "quiero que cada uno
      *  este en un cuadrado... no que se queden dentro de un mismo cuadrado", ver [inCombatAnim]
      *  en onDraw - jugador y enemigo ya se dibujan en dos casillas distintas de verdad, una
      *  separacion real, no un empujon en pixeles). Solo queda el golpe hacia delante que va y
-     *  vuelve cuando le toca atacar ([lungeFactor]), como fraccion de tilePx para que se vea
-     *  proporcionado sea cual sea la densidad de pantalla. [stanceScale] (jefe = mas grande) le da
-     *  un golpe un poco mas largo, a juego con su silueta mayor. */
-    private fun combatantOffset(dir: DungeonSpriteRepository.Direction, isActing: Boolean, roundProgress: Float, stanceScale: Float = 1f): Pair<Float, Float> {
+     *  vuelve cuando le toca atacar ([lungeFactor]).
+     *
+     *  [dxToTarget]/[dyToTarget] - VECTOR REAL (en casillas) hacia el objetivo, no una direccion
+     *  de 4 vias - bug real reportado por el usuario: "se han posicionado como en diagonal... y
+     *  pegaban en el aire" (y, mas notorio con jefes por su sprite mas grande, "se suelen poner en
+     *  las esquinas"). Causa: walkableNeighbors permite movimiento en diagonal (corta esquinas si
+     *  las dos casillas ortogonales de al lado estan libres), asi que el paso que dispara el
+     *  combate puede aterrizar en una casilla diagonal, no solo N/S/E/O - con la version anterior
+     *  (un Direction de 4 vias, la MISMA que ya se usaba para elegir el sprite de cara) el lunge
+     *  solo se movia por UN eje aunque el objetivo estuviera en diagonal, fallando el golpe a la
+     *  vista. Aqui se normaliza el vector real (que puede tener las dos componentes a la vez) en
+     *  vez de forzarlo a un solo eje - la cara del sprite (Direction, en drawSpriteAt) se queda
+     *  igual, es solo una aproximacion visual sin sprites diagonales de verdad, pero el LUNGE
+     *  ahora apunta exactamente donde esta el objetivo. [stanceScale] (jefe = mas grande) da un
+     *  golpe un poco mas largo, a juego con su silueta mayor. */
+    private fun combatLungeOffset(dxToTarget: Float, dyToTarget: Float, isActing: Boolean, roundProgress: Float, stanceScale: Float = 1f): Pair<Float, Float> {
         if (!isActing) return 0f to 0f
+        val dist = kotlin.math.hypot(dxToTarget, dyToTarget)
+        if (dist < 0.0001f) return 0f to 0f
         val lungePx = lungeFactor(roundProgress) * tilePx * COMBAT_LUNGE_FRACTION * (0.85f + stanceScale * 0.15f)
-        return battleOffsetPx(dir, lungePx)
+        return (dxToTarget / dist * lungePx) to (dyToTarget / dist * lungePx)
     }
 
     /** El enemigo en combate SIEMPRE se dibuja desde [combatEnemySnapshot] (nunca desde
@@ -720,9 +729,8 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
 
         if (phase != Phase.RESOLVING) {
             // Todavia acercandose (Phase.MOVING) - el enemigo ya mira hacia el jugador (puesto en
-            // Phase.IDLE), solo con el paso atras para no compartir la misma casilla.
-            val (offX, offY) = combatantOffset(dir, false, 0f, scale)
-            drawSpriteAt(canvas, frames, 0f, ex, ey, offX, offY, scale)
+            // Phase.IDLE); sin lunge (no esta actuando todavia), nada que desplazar.
+            drawSpriteAt(canvas, frames, 0f, ex, ey, scale = scale)
             return
         }
 
@@ -730,14 +738,13 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
         val since = elapsedSinceFaceoff()
         if (since >= roundsMs && combatWon) {
             val fadeT = ((since - roundsMs).toFloat() / DEATH_FADE_MS).coerceIn(0f, 1f)
-            val (offX, offY) = combatantOffset(dir, false, 0f, scale)
-            drawDyingSpriteAt(canvas, frames, ex, ey, fadeT, offX, offY, scale)
+            drawDyingSpriteAt(canvas, frames, ex, ey, fadeT, scale = scale)
             return
         }
 
         val idx = currentCombatRoundIdx()
         val isActing = idx >= 0 && !combatRounds[idx].playerActs
-        val (offX, offY) = combatantOffset(dir, isActing, combatRoundProgress(idx), scale)
+        val (offX, offY) = combatLungeOffset(playerTx - ex, playerTy - ey, isActing, combatRoundProgress(idx), scale)
         drawSpriteAt(canvas, frames, 0f, ex, ey, offX, offY, scale, hitFlash = isReceivingHit(playerSide = false))
 
         // El enemigo esta al SUR del jugador (una casilla justo debajo) - "encima del enemigo"
@@ -789,7 +796,11 @@ class DungeonView(context: Context, attrs: AttributeSet? = null) : View(context,
 
     private fun drawFloatingText(canvas: Canvas, text: String, tx: Float, ty: Float, paint: Paint, below: Boolean = false) {
         val cx = tx * tilePx + tilePx / 2f
-        val cy = if (below) (ty + 1f) * tilePx + 20f * density else ty * tilePx - 14f * density
+        // 32dp (antes 20dp) en el caso "debajo" - pedido explicito del usuario: "el texto que
+        // aparece en la barra del enemigo esta muy pegada a la barra... distanciala un poco mas".
+        // El caso "encima" (por defecto, enemigo al norte o en el mismo eje) no se toca, no se
+        // reporto el mismo problema ahi.
+        val cy = if (below) (ty + 1f) * tilePx + 32f * density else ty * tilePx - 14f * density
         canvas.drawText(text, cx - paint.measureText(text) / 2f, cy, paint)
     }
 
