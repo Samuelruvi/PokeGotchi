@@ -1006,12 +1006,13 @@ object DungeonSimulator {
         // resultado final.
         val roundLog = ArrayList<CombatRound>()
         var rounds = 0
-        // Bug real reportado por el usuario: "veo que los pokemon enemigos solo me pegan si
-        // aguantan mis ataques, eso no deberia ser" - antes se cortaba el turno del segundo en
-        // actuar en cuanto el primero dejaba al otro a 0 HP (nunca llegaba a golpear de vuelta si
-        // el jugador lo mataba primero). Ahora, una vez un asalto EMPIEZA (los dos siguen vivos al
-        // llegar aqui), los DOS actuan siempre - un enemigo que muere a manos del jugador este
-        // mismo asalto todavia golpea de vuelta antes de caer, como un intercambio real.
+        // Orden estricto por velocidad: el mas rapido de los dos actua primero en cada asalto, y
+        // si su golpe deja al otro a 0 HP, el asalto se corta ahi mismo - el que acaba de morir
+        // NUNCA llega a golpear de vuelta. Pedido explicito del usuario: "si el mas rapido es
+        // capaz de pegar y mata de un golpe al Pokemon, no deberia de ser capaz el otro Pokemon
+        // de atacar" (revierte un fix anterior que garantizaba que los dos actuaran siempre
+        // dentro de un mismo asalto - ese "intercambio real" es justo lo que ahora se reporta
+        // como bug, asi que se prioriza este pedido mas reciente).
         while (hp > 0f && enemyHp > 0f && rounds < 30) {
             rounds++
             val order = if (playerSpeed >= enemySpeed) listOf(true, false) else listOf(false, true)
@@ -1020,10 +1021,12 @@ object DungeonSimulator {
                     val atk = attackRoll(context, species, enemy.species, playerLevel, enemyDef, playerSpeed, enemySpeed, atkMult = buffAtk, accBonus = buffAcc)
                     if (atk != null) enemyHp = (enemyHp - atk.damage).coerceAtLeast(0f)
                     roundLog.add(CombatRound(true, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hp, enemyHp))
+                    if (enemyHp <= 0f) break
                 } else {
                     val atk = attackRoll(context, enemy.species, species, enemy.level, playerDef, enemySpeed, playerSpeed, atkMult = enemyAtkMult)
                     if (atk != null) hp = (hp - atk.damage).coerceAtLeast(0f)
                     roundLog.add(CombatRound(false, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hp, enemyHp))
+                    if (hp <= 0f) break
                 }
             }
         }
