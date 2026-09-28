@@ -8,6 +8,7 @@ Fusiones, todo sin necesidad de abrir la app.
 Proyecto personal de fan, sin ánimo de lucro. Los sprites y sonidos de los Pokémon
 pertenecen a Nintendo / Game Freak / The Pokémon Company; este repositorio no tiene
 afiliación con ellos y no se distribuye con fines comerciales.
+Agradecimientos a ErickLostie por los sprites y sonidos y a PokeRogue por algunos sprites faltantes.
 
 <img src="docs/widget-screenshot.png" alt="Widget de PokeGotchi en la pantalla de inicio" width="360">
 
