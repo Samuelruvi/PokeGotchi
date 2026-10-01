@@ -22,7 +22,7 @@ import kotlin.math.sin
  * Fase 1: corazones (comun a los 3). Luego se añaden baya/agua/mano.
  */
 object EffectGenerator {
-    private const val SCALE = 4
+    const val SCALE = 4
 
     private val HEART = arrayOf(
         "0110110", "1111111", "1121111", "3111113", "0311130", "0031300", "0003000"
@@ -31,18 +31,57 @@ object EffectGenerator {
     private const val C_HI = 0xFFFFD2E4.toInt()
     private const val C_EDGE = 0xFFBE285A.toInt()
 
-    fun frameFor(kind: String, i: Int, nf: Int, w: Int, h: Int, cx: Int, cy: Int, cryFrame: Int = 0): Bitmap {
-        val arr = IntArray(w * h)
+    /** [padX]/[padY] (px logicos, antes del x4): margen transparente extra alrededor del lienzo
+     *  del sprite, para que el efecto [kind] nunca se recorte por el borde del array - ver
+     *  [padFor]. El sprite real sigue dibujandose centrado en (cx,cy) de siempre; el efecto se
+     *  desplaza [padX]/[padY] para quedar en el mismo sitio relativo, solo que ahora con hueco de
+     *  sobra alrededor. */
+    fun frameFor(kind: String, i: Int, nf: Int, w: Int, h: Int, cx: Int, cy: Int, cryFrame: Int = 0,
+                 padX: Int = 0, padY: Int = 0): Bitmap {
+        val pw = w + 2 * padX; val ph = h + 2 * padY
+        val arr = IntArray(pw * ph)
         val cyy = if (cy in 1 until h) cy else h / 2
+        val cxs = cx + padX; val cys = cyy + padY
         when (kind) {
-            "feed" -> drawFeed(arr, w, h, cx, cyy, i, nf)
-            "pet" -> drawPet(arr, w, h, cx, cyy, i, nf, cryFrame)
-            "wash" -> drawWash(arr, w, h, cx, i, nf)
+            "feed" -> drawFeed(arr, pw, ph, h, cxs, cys, i, nf)
+            "pet" -> drawPet(arr, pw, ph, w, h, cxs, cys, i, nf, cryFrame)
+            "wash" -> drawWash(arr, pw, ph, h, cxs, i, nf)
         }
-        val small = Bitmap.createBitmap(arr, w, h, Bitmap.Config.ARGB_8888)
-        val big = Bitmap.createScaledBitmap(small, w * SCALE, h * SCALE, false)
+        val small = Bitmap.createBitmap(arr, pw, ph, Bitmap.Config.ARGB_8888)
+        val big = Bitmap.createScaledBitmap(small, pw * SCALE, ph * SCALE, false)
         small.recycle()
         return big
+    }
+
+    /** Margen extra (px logicos) a sumar alrededor del lienzo del sprite para que el efecto
+     *  [kind] NUNCA se recorte por el borde del array, sea cual sea el cx/cy real del sprite
+     *  (ver blend/setPx: un pixel fuera de [0,w)x[0,h) se descarta en silencio sin avisar - bug
+     *  real reportado por el usuario con Luxio: "la mano se corta en la izquierda y los
+     *  corazones tambien", un corte brusco). Se deriva de las MISMAS formulas que ya dibujan
+     *  cada efecto (no son numeros sueltos aparte) - si esas formulas cambian mas adelante, este
+     *  margen se recalcula solo y sigue siendo suficiente. El hueco extra puede comerse el sitio
+     *  del huevo/la nube de necesidad - a proposito, pedido explicito del usuario ("si es porque
+     *  por ahi esta la nube no me importa que las animaciones se pongan encima").
+     */
+    fun padFor(kind: String, w: Int, h: Int): Pair<Int, Int> {
+        val u = h / 46f
+        val hs = max(1, u.roundToInt())
+        // corazones: comunes a los 3 efectos (ver heartsParams) - xl/xr = cx∓7u, se separan hasta
+        // ∓11u mas, y el propio corazon ocupa ±3*hs desde su centro.
+        var reachX = (18 * u).roundToInt() + 3 * hs
+        var reachY = 0
+        when (kind) {
+            "pet" -> {
+                val hw = max(8, (16 * u).roundToInt())
+                val (_, _, hh) = handPixels(hw)
+                val amp = w * 0.22f
+                val trailLen = max(2, (5 * u).roundToInt())
+                reachX = maxOf(reachX, (amp + hw / 2f + trailLen + 2).roundToInt())
+                reachY = maxOf(reachY, (hh / 2f + u).roundToInt())
+            }
+            "wash" -> reachX = maxOf(reachX, (15 * u).roundToInt() + 2)
+        }
+        return reachX to reachY
     }
 
     // ---- primitivas ----
@@ -78,14 +117,16 @@ object EffectGenerator {
     }
 
     // ---- corazones en dos hileras (reutilizable) ----
+    // [refH] = alto REAL del sprite (sin el margen extra de padFor) - la escala de los corazones
+    // depende del tamaño del Pokemon, no del lienzo (que puede ser mas grande, ver frameFor).
     private class HP(val xl: Int, val xr: Int, val cy: Int, val rise: Int, val spread: Int, val hs: Int)
-    private fun heartsParams(w: Int, h: Int, cx: Int): HP {
-        val u = h / 46f
+    private fun heartsParams(refH: Int, cx: Int): HP {
+        val u = refH / 46f
         fun r(v: Float) = (v * u).roundToInt()
         return HP(cx - r(7f), cx + r(7f), r(34f), r(20f), r(11f), max(1, u.roundToInt()))
     }
-    private fun heartsRows(arr: IntArray, w: Int, h: Int, cx: Int, f: Int, spawns: IntArray, life: Int) {
-        val p0 = heartsParams(w, h, cx)
+    private fun heartsRows(arr: IntArray, w: Int, h: Int, refH: Int, cx: Int, f: Int, spawns: IntArray, life: Int) {
+        val p0 = heartsParams(refH, cx)
         for (sp in spawns) {
             val p = (f - sp).toFloat() / life
             if (p < 0f || p > 1f) continue
@@ -113,8 +154,8 @@ object EffectGenerator {
     private const val C_BERRY = 0xFFE13C3C.toInt()
     private const val C_BERRY_HI = 0xFFFFAAAA.toInt()
     private const val C_LEAF = 0xFF5AB446.toInt()
-    private fun drawFeed(arr: IntArray, w: Int, h: Int, cx: Int, cy: Int, f: Int, nf: Int) {
-        val u = h / 46f
+    private fun drawFeed(arr: IntArray, w: Int, h: Int, refH: Int, cx: Int, cy: Int, f: Int, nf: Int) {
+        val u = refH / 46f
         val eatEnd = (nf * 0.45f).toInt().coerceAtLeast(1)
         if (f <= eatEnd) {
             val pe = f.toFloat() / eatEnd
@@ -128,7 +169,7 @@ object EffectGenerator {
             setPx(arr, w, h, cx, by - r, C_LEAF); setPx(arr, w, h, cx + 1, by - r - 1, C_LEAF)
         }
         val spawns = IntArray(6) { k -> eatEnd + (k * (nf - eatEnd) / 6f).toInt() }
-        heartsRows(arr, w, h, cx, f, spawns, (nf * 0.32f).toInt())
+        heartsRows(arr, w, h, refH, cx, f, spawns, (nf * 0.32f).toInt())
     }
 
     // ---- ACARICIAR: mano (emoji recoloreado) deslizando + lineas de movimiento + corazones ----
@@ -193,10 +234,12 @@ object EffectGenerator {
      *  donde extender el bucle de render en "pet". */
     fun petBurstEndFrame(cryFrame: Int): Int = cryFrame + PET_BURST_SPAN + PET_BURST_LIFE
 
-    private fun drawPet(arr: IntArray, w: Int, h: Int, cx: Int, cy: Int, f: Int, nf: Int, cryFrame: Int) {
-        val u = h / 46f
+    // [refW]/[refH] = tamaño REAL del sprite (sin el margen extra de padFor, ver frameFor) - el
+    // vaiven (amp) y la escala de la mano dependen del Pokemon, no del lienzo ya ampliado.
+    private fun drawPet(arr: IntArray, w: Int, h: Int, refW: Int, refH: Int, cx: Int, cy: Int, f: Int, nf: Int, cryFrame: Int) {
+        val u = refH / 46f
         val (hand, hw, hh) = handPixels(max(8, (16 * u).roundToInt()))
-        val amp = w * 0.22f
+        val amp = refW * 0.22f
         val handF = minOf(f, PET_HAND_FREEZE_FRAME)
         val ang = 2.0 * Math.PI * 2.0 * handF / PET_REF_FRAMES
         val xc = cx + (amp * sin(ang)).toInt()
@@ -232,20 +275,20 @@ object EffectGenerator {
         val handTotal = PET_HAND_FREEZE_FRAME + 1
         val earlyLife = max(2, (handTotal * 0.28f).toInt())
         val earlySpawns = intArrayOf((handTotal * 0.15f).toInt(), (handTotal * 0.45f).toInt())
-        heartsRows(arr, w, h, cx, f, earlySpawns, earlyLife)
+        heartsRows(arr, w, h, refH, cx, f, earlySpawns, earlyLife)
 
         // Rafaga final: varios corazones escalonados arrancando justo en el grito (ver
         // petBurstEndFrame/PET_BURST_*), para que salgan "de golpe" en vez de solo uno.
         val burstSpawns = IntArray(PET_BURST_SPAWNS) { k -> cryFrame + k * PET_BURST_SPAN / (PET_BURST_SPAWNS - 1) }
-        heartsRows(arr, w, h, cx, f, burstSpawns, PET_BURST_LIFE)
+        heartsRows(arr, w, h, refH, cx, f, burstSpawns, PET_BURST_LIFE)
     }
 
     // ---- DUCHA: chorro en cono desde arriba + espuma abajo, luego corazones ----
     private const val C_DROP = 0xFF5AB9FF.toInt()
     private const val C_DROP_HI = 0xFFE6F8FF.toInt()
     private const val C_FOAM = 0xFFF8FAFC.toInt()
-    private fun drawWash(arr: IntArray, w: Int, h: Int, cx: Int, f: Int, nf: Int) {
-        val u = h / 46f
+    private fun drawWash(arr: IntArray, w: Int, h: Int, refH: Int, cx: Int, f: Int, nf: Int) {
+        val u = refH / 46f
         val se = (nf * 0.6f).toInt().coerceAtLeast(1)
         if (f <= se) {
             val srcY = (3 * u).roundToInt(); val fall = (40 * u).roundToInt()
@@ -271,14 +314,14 @@ object EffectGenerator {
             var fx = cx - (15 * u).roundToInt()
             var toggle = 0
             while (fx <= cx + (15 * u).roundToInt()) {
-                val fy = h - (if (toggle == 0) 3 else 6) * u.roundToInt()
+                val fy = refH - (if (toggle == 0) 3 else 6) * u.roundToInt()
                 val bob = (sin(f * 0.5 + fx.toDouble())).toInt()
                 disc(arr, w, h, fx, fy + bob, r, C_FOAM)
                 fx += (6 * u).roundToInt(); toggle = 1 - toggle
             }
         }
         val spawns = IntArray(4) { k -> se + (k * (nf - se) / 4f).toInt() }
-        heartsRows(arr, w, h, cx, f, spawns, (nf * 0.32f).toInt())
+        heartsRows(arr, w, h, refH, cx, f, spawns, (nf * 0.32f).toInt())
     }
 
     // ---- NUBE DE NECESIDAD: nube pixel-art fija (no ligada al tamaño del sprite), con una

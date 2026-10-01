@@ -721,6 +721,15 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // corazones (arrancada en el grito, ver EffectGenerator.petBurstEndFrame) se vea entera,
         // no cortada a medias. El resto de kinds no cambia (cryFrame ya cae dentro de frames).
         val renderFrames = if (kind == "pet") maxOf(fx.frames, EffectGenerator.petBurstEndFrame(fx.cryFrame) + 1) else fx.frames
+        // Margen extra alrededor del sprite para que la mano/corazones nunca se recorten por el
+        // borde (ver EffectGenerator.padFor - bug real reportado con Luxio: "la mano se corta en
+        // la izquierda y los corazones tambien"). overlayGrow es cuanto hay que agrandar la CAJA
+        // de fx_overlay en el widget (ver applyAdaptiveEggAndCloudLayout) para que el Pokemon
+        // dentro siga viendose del mismo tamaño/sitio que en reposo - solo crece el margen
+        // transparente alrededor, invadiendo si hace falta el hueco del huevo/la nube (a
+        // proposito, pedido explicito del usuario: "no me importa que se pongan encima").
+        val (padX, padY) = EffectGenerator.padFor(kind, w, h)
+        val overlayGrow = maxOf((w + 2 * padX) / w.toFloat(), (h + 2 * padY) / h.toFloat())
         Thread {
             try {
                 // Los tiempos de sonido (Handler.postDelayed, arriba) se cuentan desde ESTE mismo
@@ -733,15 +742,19 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // toca, calculado desde el arranque - así no se acumula retraso.
                 val t0 = System.currentTimeMillis()
                 for (i in 0 until renderFrames) {
-                    // Compone: frame del idle (ciclando) + efecto, en un solo bitmap.
-                    val effect = EffectGenerator.frameFor(kind, i, renderFrames, w, h, cx, cy, fx.cryFrame)
+                    // Compone: frame del idle (ciclando) + efecto, en un solo bitmap. El sprite se
+                    // dibuja DESPLAZADO dentro del lienzo ya ampliado (padX/padY*SCALE), para que
+                    // quede en el mismo sitio relativo de siempre y el margen extra del efecto
+                    // quede alrededor suyo, no debajo.
+                    val effect = EffectGenerator.frameFor(kind, i, renderFrames, w, h, cx, cy, fx.cryFrame, padX, padY)
                     val comp = Bitmap.createBitmap(effect.width, effect.height, Bitmap.Config.ARGB_8888)
                     val cv = Canvas(comp)
                     val spf = BitmapFactory.decodeFile(
                         SpriteRepository.frameFile(context, styleKey, poke, i % spriteFC).absolutePath
                     )
                     if (spf != null) {
-                        cv.drawBitmap(spf, null, Rect(0, 0, comp.width, comp.height), null)
+                        val left = padX * EffectGenerator.SCALE; val top = padY * EffectGenerator.SCALE
+                        cv.drawBitmap(spf, null, Rect(left, top, left + w * EffectGenerator.SCALE, top + h * EffectGenerator.SCALE), null)
                         spf.recycle()
                     }
                     cv.drawBitmap(effect, 0f, 0f, null)
@@ -749,7 +762,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
 
                     // update COMPLETO (no parcial) con el composite en el overlay, para no
                     // chocar con el addView del flipper.
-                    ids.forEach { render(context, mgr, it, comp) }
+                    ids.forEach { render(context, mgr, it, comp, overlayGrow = overlayGrow) }
                     val targetElapsed = (i + 1) * fx.interval
                     val actualElapsed = System.currentTimeMillis() - t0
                     val sleepMs = targetElapsed - actualElapsed
@@ -807,7 +820,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
      *  la del hueco real del widget, podia dejar un margen de letterbox que lo desplazaba). */
     private fun render(
         context: Context, mgr: AppWidgetManager, appWidgetId: Int, overlayBmp: Bitmap? = null,
-        eggShakeAngleDeg: Float = 0f
+        eggShakeAngleDeg: Float = 0f, overlayGrow: Float = 1f
     ) {
         if (!PetState.hasChosenStarter(context)) { renderWelcome(context, mgr, appWidgetId); return }
         val s = PetState.loadWithDecay(context)
@@ -853,7 +866,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
         views.setProgressBar(R.id.xp_bar, 100, (PetState.progressOf(context, s.xp, PetState.currentPokemon(context)) * 100).toInt(), false)
         applyNeedIndicators(context, views, s)
         applyEggIndicator(context, views, eggShakeAngleDeg)
-        applyAdaptiveEggAndCloudLayout(context, views, mgr, appWidgetId, s)
+        applyAdaptiveEggAndCloudLayout(context, views, mgr, appWidgetId, s, overlayGrow)
 
         views.setOnClickPendingIntent(R.id.btn_feed, actionPI(context, ACTION_FEED, appWidgetId))
         views.setOnClickPendingIntent(R.id.btn_pet, actionPI(context, ACTION_PET, appWidgetId))
@@ -1084,7 +1097,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
      * 12+ (setViewLayoutWidth/Margin) - en versiones mas viejas se queda con el tamaño/posicion
      * fijos definidos en el XML.
      */
-    private fun applyAdaptiveEggAndCloudLayout(context: Context, views: RemoteViews, mgr: AppWidgetManager, appWidgetId: Int, s: PetState.Stats) {
+    private fun applyAdaptiveEggAndCloudLayout(context: Context, views: RemoteViews, mgr: AppWidgetManager, appWidgetId: Int, s: PetState.Stats, overlayGrow: Float = 1f) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         val opts = try { mgr.getAppWidgetOptions(appWidgetId) } catch (e: Exception) { return }
         val minW = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
@@ -1122,10 +1135,27 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // estirarse todas al mismo hueco. Volvio a como estaba: TODOS los sprites usan el mismo
         // spriteSize/spriteDispH del breakpoint, sin factor por especie.
         for (id in intArrayOf(R.id.widget_pokemon, R.id.fx_overlay)) {
-            views.setViewLayoutWidth(id, v.spriteSize, TypedValue.COMPLEX_UNIT_DIP)
-            views.setViewLayoutHeight(id, spriteDispH, TypedValue.COMPLEX_UNIT_DIP)
-            views.setViewLayoutMargin(id, RemoteViews.MARGIN_START, v.spriteLeft, TypedValue.COMPLEX_UNIT_DIP)
-            views.setViewLayoutMargin(id, RemoteViews.MARGIN_TOP, v.spriteTop, TypedValue.COMPLEX_UNIT_DIP)
+            if (id == R.id.fx_overlay && overlayGrow > 1f) {
+                // Reaccion con margen extra (ver EffectGenerator.padFor/playReactionOnce): la caja
+                // de fx_overlay crece la MISMA proporcion que crecio el bitmap compuesto, asi el
+                // Pokemon dentro se ve exactamente del mismo tamaño/sitio que en widget_pokemon
+                // (que no cambia, sigue oculto detras) - solo crece el margen transparente
+                // alrededor, que puede invadir el hueco del huevo/la nube sin problema
+                // (pokemon_area tiene clipChildren=false a proposito, ver widget_pokegotchi.xml) -
+                // pedido explicito del usuario: "no me importa que las animaciones se pongan
+                // encima de la nube".
+                val growW = v.spriteSize * overlayGrow
+                val growH = spriteDispH * overlayGrow
+                views.setViewLayoutWidth(id, growW, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutHeight(id, growH, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutMargin(id, RemoteViews.MARGIN_START, v.spriteLeft - (growW - v.spriteSize) / 2f, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutMargin(id, RemoteViews.MARGIN_TOP, v.spriteTop - (growH - spriteDispH) / 2f, TypedValue.COMPLEX_UNIT_DIP)
+            } else {
+                views.setViewLayoutWidth(id, v.spriteSize, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutHeight(id, spriteDispH, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutMargin(id, RemoteViews.MARGIN_START, v.spriteLeft, TypedValue.COMPLEX_UNIT_DIP)
+                views.setViewLayoutMargin(id, RemoteViews.MARGIN_TOP, v.spriteTop, TypedValue.COMPLEX_UNIT_DIP)
+            }
         }
 
         for (id in intArrayOf(R.id.egg_overlay, R.id.egg_flipper)) {

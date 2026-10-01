@@ -4,7 +4,8 @@
      superpuestos (ocultos hasta que se toca su boton). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:clipChildren="false">
 
     <ImageView
         android:id="@+id/widget_bg"
@@ -19,6 +20,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
+        android:clipChildren="false"
         android:padding="8dp">
 
         <!-- Nivel + barra de experiencia (azul) -->
@@ -58,12 +60,18 @@
                 android:contentDescription="@null" />
         </LinearLayout>
 
-        <!-- Zona Pokemon: sprite + efectos superpuestos (tocar = grito) -->
+        <!-- Zona Pokemon: sprite + efectos superpuestos (tocar = grito). clipChildren=false:
+             pedido explicito del usuario tras ver la mano/corazones de "acariciar" cortados en
+             seco contra el borde - fx_overlay puede agrandarse mas alla de este hueco (ver
+             PokeWidgetProvider.applyAdaptiveEggAndCloudLayout/EffectGenerator.padFor) e invadir
+             el sitio del huevo/la nube sin recortarse; el usuario dijo explicitamente que no le
+             importa que se superponga a la nube. -->
         <FrameLayout
             android:id="@+id/pokemon_area"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1">
+            android:layout_weight="1"
+            android:clipChildren="false">
             <ViewFlipper
                 android:id="@+id/widget_pokemon"
                 android:layout_width="match_parent"
