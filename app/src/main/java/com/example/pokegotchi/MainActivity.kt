@@ -225,6 +225,7 @@ class MainActivity : AppCompatActivity() {
         // Ofertas periodicas (Fase 3): NO hay popup automatico (mismo criterio que la
         // evolucion) - solo se genera en silencio si toca, y se avisa con el icono 🎁 del
         // encabezado; el jugador decide cuando mirarla.
+        PetState.catchUpStarterGiftIfWaiting(this)
         PetState.maybeGenerateOffer(this)
         refreshOfferBadge()
         // Repinta SIEMPRE el icono de huevo de "Mis Pokemon": antes solo se refrescaba si cambio

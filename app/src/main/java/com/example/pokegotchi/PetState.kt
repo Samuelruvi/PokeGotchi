@@ -1345,6 +1345,10 @@ object PetState {
     // una o se descarta explicitamente - asi no "rueda" sola con cada apertura de la app.
     private const val KEY_OFFER_SPECIES = "offer_species"   // "nombre:id,nombre:id,..." o vacio
     private const val KEY_OFFER_LAST = "offer_last_time"   // ancla de INICIO DE CICLO (no de generacion, ver maybeGenerateOffer)
+    // true en cuanto se resuelve/descarta un regalo por PRIMERA VEZ en la vida de la partida -
+    // usado solo por catchUpStarterGiftIfWaiting para distinguir "todavia esperando el primer
+    // regalo de siempre" de "ya en su segundo/tercer/... ciclo normal" (ver ese comentario).
+    private const val KEY_OFFER_EVER_RESOLVED = "offer_ever_resolved"
     // 12h (antes 24h) - pedido explicito del usuario tras hacer cuentas: con 1025 especies y un
     // regalo (1 eleccion) por ciclo, a 24h hacian falta casi 3 años para desbloquear el roster
     // entero, sin contar variantes shiny/formas especiales encima. A 12h se reduce a la mitad.
@@ -1381,6 +1385,31 @@ object PetState {
             pool.removeAt(idx)
         }
         return result
+    }
+
+    private const val KEY_STARTER_GIFT_CATCHUP_DONE = "starter_gift_catchup_done"
+
+    /** Migracion puntual (una sola vez por partida): jugadores que ya habian elegido inicial con
+     *  la version VIEJA del regalo de bienvenida (ver markStarterChosen, antes hacia esperar el
+     *  ciclo completo de 12h) y todavia siguen esperando su PRIMER regalo de siempre reciben
+     *  tambien el regalo instantaneo al actualizar - pedido explicito del usuario: "no puedes
+     *  detectar cuando un jugador tiene el starter solo para activar un regalo extra... es el
+     *  caso de estos jugadores que ya tienen el juego y todavia no han pasado las 12 primeras
+     *  horas". KEY_OFFER_EVER_RESOLVED (marcado en resolveOffer/dismissOffer) es la clave: solo
+     *  es false para quien NUNCA ha llegado a abrir/descartar ningun regalo - un jugador ya en su
+     *  segundo o tercer ciclo normal (que tambien podria estar "a menos de 12h" de su PROPIO
+     *  regalo siguiente) no se toca, solo quien de verdad sigue esperando el primero. Llamar
+     *  SIEMPRE antes de maybeGenerateOffer (no desde dentro de ella - forceNewOffer ya llama a
+     *  maybeGenerateOffer, y encadenarla ahi dentro la reactivaria de forma redundante cada vez
+     *  que se fuerza una oferta). */
+    fun catchUpStarterGiftIfWaiting(context: Context) {
+        val p = prefs(context)
+        if (p.getBoolean(KEY_STARTER_GIFT_CATCHUP_DONE, false)) return
+        p.edit().putBoolean(KEY_STARTER_GIFT_CATCHUP_DONE, true).commit()
+        if (!hasChosenStarter(context)) return
+        if (p.getBoolean(KEY_OFFER_EVER_RESOLVED, false)) return
+        if (currentOffer(context).isNotEmpty()) return
+        forceNewOffer(context)
     }
 
     /** Ciclo de regalos (pedido explicitamente asi): el regalo aparece a las OFFER_INTERVAL_HOURS
@@ -1469,7 +1498,8 @@ object PetState {
         val id = loadEvoTable(context)[n]?.id
         if (id != null) rollFreshIndividual(context, n, false, id)
         val anchor = offerAppearedAt(context)
-        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
+        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor)
+            .putBoolean(KEY_OFFER_EVER_RESOLVED, true).commit()
     }
 
     /** Descarta la oferta actual sin elegir ninguno (si no gustan los 5, esperar a los
@@ -1478,7 +1508,8 @@ object PetState {
      *  momento en que este regalo aparecio, no desde ahora. */
     fun dismissOffer(context: Context) {
         val anchor = offerAppearedAt(context)
-        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
+        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor)
+            .putBoolean(KEY_OFFER_EVER_RESOLVED, true).commit()
     }
 
     /** Fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 12h/24h - en

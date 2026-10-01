@@ -521,6 +521,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
             NotificationHelper.cancelUrgentCare(context)
         }
 
+        PetState.catchUpStarterGiftIfWaiting(context)
         if (PetState.maybeGenerateOffer(context)) {
             dbg(context, "regalo: oferta nueva generada")
             NotificationHelper.notifyOfferReady(context)
