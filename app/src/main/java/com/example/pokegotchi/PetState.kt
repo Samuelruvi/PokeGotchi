@@ -296,6 +296,31 @@ object PetState {
         return min + Random.nextFloat() * (max - min)
     }
 
+    /** Arranque de las 3 barras para un individuo NUEVO (ver setPokemon/rollFreshIndividual):
+     *  cada una en un punto aleatorio entre 50 y 100 de por si (ya existia, evita el "100% en
+     *  las 3 el dia 1" artificial), PERO una de las 3, elegida al azar, se fuerza por DEBAJO de
+     *  su THRESH_MIN_* - pedido explicito del usuario: "quiero que los pokemon nuevos vengan con
+     *  una estadistica aleatoria que requiera de atencion, para tener que atenderle nada mas
+     *  tenerle". THRESH_MIN_* es el extremo MAS BAJO posible del umbral que le toque despues a
+     *  esa stat (ensureThreshold sortea uno nuevo la primera vez que se consulta) - quedar por
+     *  debajo de ese minimo garantiza estar por debajo de CUALQUIER umbral que le pueda tocar,
+     *  sea cual sea, asi que esa stat SIEMPRE aparece como "necesita atencion" de entrada - pero
+     *  SIN quedarse cerca de 0 (probado con iron-jugulis: salio con salud a 4%, demasiado bajo
+     *  segun el usuario, "va bien pero no lo dejes tan bajo") - se queda entre el 60% y el 95%
+     *  de ese minimo, siempre por debajo del umbral pero con margen de sobra antes de 0. */
+    private fun rollFreshStats(): Triple<Float, Float, Float> {
+        var health = 50f + Random.nextFloat() * 50f
+        var hygiene = 50f + Random.nextFloat() * 50f
+        var happiness = 50f + Random.nextFloat() * 50f
+        val needyFactor = 0.6f + Random.nextFloat() * 0.35f
+        when (Random.nextInt(3)) {
+            0 -> health = THRESH_MIN_HEALTH * needyFactor
+            1 -> hygiene = THRESH_MIN_HYGIENE * needyFactor
+            else -> happiness = THRESH_MIN_HAPPY * needyFactor
+        }
+        return Triple(health, hygiene, happiness)
+    }
+
     /** Umbral ACTUAL (por especie) de esta stat: si aun no se ha sorteado ninguno (Pokemon nuevo,
      *  o guardado de antes de este cambio), se sortea una vez y se guarda (self-healing). Se
      *  vuelve a sortear en tryApplyAction al satisfacer la accion -
@@ -558,10 +583,12 @@ object PetState {
             // (nunca vuelve a repetirse el resto de la partida) que ademas sesga el propio dia 1
             // (ej. higiene, la mas lenta, casi nunca le da tiempo a pedir nada ese primer dia).
             // Cada barra arranca en un punto aleatorio entre 50 y 100, cada una por su cuenta
-            // (mismo criterio ya usado en el simulador de economia).
-            e.putFloat(k(n, KEY_HEALTH), 50f + Random.nextFloat() * 50f)
-                .putFloat(k(n, KEY_HYGIENE), 50f + Random.nextFloat() * 50f)
-                .putFloat(k(n, KEY_HAPPINESS), 50f + Random.nextFloat() * 50f)
+            // (mismo criterio ya usado en el simulador de economia) - y una de las 3, al azar,
+            // arranca ya necesitando esa atencion (ver rollFreshStats).
+            val (freshHealth, freshHygiene, freshHappiness) = rollFreshStats()
+            e.putFloat(k(n, KEY_HEALTH), freshHealth)
+                .putFloat(k(n, KEY_HYGIENE), freshHygiene)
+                .putFloat(k(n, KEY_HAPPINESS), freshHappiness)
                 .putFloat(k(n, KEY_XP), 0f)
                 .remove(k(n, KEY_EVOLVED_AWAY))
                 .remove(k(n, KEY_EVOLVED_TO))
@@ -992,11 +1019,12 @@ object PetState {
         val p = prefs(context)
         if (p.contains(k(n, KEY_XP))) return
         unlock(context, base)
+        val (freshHealth, freshHygiene, freshHappiness) = rollFreshStats()
         val e = p.edit()
             .putInt(k(n, KEY_ID), id)
-            .putFloat(k(n, KEY_HEALTH), 50f + Random.nextFloat() * 50f)
-            .putFloat(k(n, KEY_HYGIENE), 50f + Random.nextFloat() * 50f)
-            .putFloat(k(n, KEY_HAPPINESS), 50f + Random.nextFloat() * 50f)
+            .putFloat(k(n, KEY_HEALTH), freshHealth)
+            .putFloat(k(n, KEY_HYGIENE), freshHygiene)
+            .putFloat(k(n, KEY_HAPPINESS), freshHappiness)
             .putFloat(k(n, KEY_XP), 0f)
             .putLong(k(n, KEY_LAST), System.currentTimeMillis())
         if (base in GENDER_SPECIES) e.putString(k(n, KEY_GENDER), rollGender(base))
