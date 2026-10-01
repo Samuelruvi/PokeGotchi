@@ -392,13 +392,14 @@ object PetState {
 
     fun hasChosenStarter(context: Context): Boolean = prefs(context).getBoolean(KEY_STARTER_DONE, false)
     fun markStarterChosen(context: Context) {
-        // Tambien fija el punto de partida para las ofertas periodicas (Fase 3): asi la
-        // primera oferta tarda el intervalo completo desde que se elige el inicial, en vez de
-        // aparecer de inmediato en el primer arranque.
-        prefs(context).edit()
-            .putBoolean(KEY_STARTER_DONE, true)
-            .putLong(KEY_OFFER_LAST, System.currentTimeMillis())
-            .commit()
+        // Pedido explicito del usuario: el primer regalo esta disponible DE INMEDIATO al elegir
+        // el inicial (antes se hacia esperar el intervalo completo a proposito, para que no
+        // apareciese de golpe en el primer arranque - invertido ahora: un jugador nuevo recibe
+        // la posibilidad de un segundo Pokemon de bienvenida nada mas empezar, en vez de tener
+        // que esperar 12h para el primer regalo). Los siguientes regalos siguen el ciclo normal
+        // de siempre a partir de este (ver resolveOffer/dismissOffer).
+        prefs(context).edit().putBoolean(KEY_STARTER_DONE, true).commit()
+        forceNewOffer(context)
     }
 
     private const val KEY_UNLOCKED_AT = "unlocked_at"
@@ -1480,16 +1481,18 @@ object PetState {
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor).commit()
     }
 
-    /** DEBUG: fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 12h/24h -
-     *  pedido explicito del usuario tras descartar sin querer un regalo real ("dame un regalo que
-     *  le he dado a descartar sin querer"). Ancla el ciclo a "hace exactamente OFFER_INTERVAL_HOURS"
-     *  (en vez de a 0L, que es un timestamp de 1970 - bug real que causó: al elegir/descartar esta
-     *  oferta forzada, offerAppearedAt() = 0 + 12h leía un ancla corrupta clavada en el pasado, y
-     *  offerCooldownRemainingMs devolvia 0 para siempre - el icono de regalo con el timer
-     *  desaparecia sin mas, reportado por el usuario: "he recogido el regalo y ha desaparecido el
-     *  icono de regalo con el timer") para que [maybeGenerateOffer] genere una de inmediato SIN
-     *  dejar un ancla sin sentido para el ciclo siguiente. Solo se llama desde el broadcast de
-     *  debug (ver PokeWidgetProvider.ACTION_DEBUG_FORCE_OFFER), nunca desde la UI normal. */
+    /** Fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 12h/24h - en
+     *  origen pedido explicito del usuario tras descartar sin querer un regalo real ("dame un
+     *  regalo que le he dado a descartar sin querer"), y ahora tambien usado por
+     *  [markStarterChosen] para el regalo de bienvenida al elegir inicial. Ancla el ciclo a
+     *  "hace exactamente OFFER_INTERVAL_HOURS" (en vez de a 0L, que es un timestamp de 1970 -
+     *  bug real que causó: al elegir/descartar esta oferta forzada, offerAppearedAt() = 0 + 12h
+     *  leía un ancla corrupta clavada en el pasado, y offerCooldownRemainingMs devolvia 0 para
+     *  siempre - el icono de regalo con el timer desaparecia sin mas, reportado por el usuario:
+     *  "he recogido el regalo y ha desaparecido el icono de regalo con el timer") para que
+     *  [maybeGenerateOffer] genere una de inmediato SIN dejar un ancla sin sentido para el ciclo
+     *  siguiente. Tambien se llama desde el broadcast de debug (ver
+     *  PokeWidgetProvider.ACTION_DEBUG_FORCE_OFFER). */
     fun forceNewOffer(context: Context) {
         val fakeLast = System.currentTimeMillis() - (OFFER_INTERVAL_HOURS * 3_600_000f).toLong()
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, fakeLast).commit()
