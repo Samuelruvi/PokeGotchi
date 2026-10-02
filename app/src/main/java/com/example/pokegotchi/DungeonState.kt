@@ -186,38 +186,13 @@ object DungeonState {
     fun bestFloor(context: Context): Int = prefs(context).getInt(KEY_BEST_FLOOR, 0)
     fun lastTickAt(context: Context): Long = prefs(context).getLong(KEY_LAST_TICK_AT, 0L)
 
-    // Latido del servicio de la mazmorra (ver BackgroundHealth): lastTickAt NO sirve de latido,
-    // porque durante un COOLDOWN no se refresca en cada ciclo (solo al empezarlo) - asi que el
-    // servicio escribe su PROPIO latido en cada vuelta. Un widget no ejecuta codigo y no puede
-    // calcular "hace cuanto": lo mira el codigo que si corre (tick del widget, toque al Pokemon).
-    private const val KEY_HEARTBEAT_AT = "service_heartbeat_at"
-    // 4 ciclos del servicio (60s cada uno) sin latir.
-    private const val STALL_AFTER_MS = 4 * 60_000L
-
-    fun markHeartbeat(context: Context) {
-        prefs(context).edit().putLong(KEY_HEARTBEAT_AT, System.currentTimeMillis()).apply()
-    }
-
-    /** Ultimo latido del servicio. Si nunca se ha registrado ninguno (carrera empezada con una
-     *  version anterior) se usa lastTickAt como respaldo - una vez el servicio late por primera
-     *  vez, manda siempre el latido propio. */
-    private fun lastBeatAt(context: Context): Long =
-        prefs(context).getLong(KEY_HEARTBEAT_AT, 0L).takeIf { it > 0L } ?: lastTickAt(context)
-
     /** true si hay una carrera/cooldown que DEBERIA estar avanzando en segundo plano y el servicio
-     *  lleva demasiado sin latir. Con la mazmorra en IDLE no hay nada que avanzar: nunca. */
-    fun isBackgroundStalled(context: Context, now: Long = System.currentTimeMillis()): Boolean {
-        if (status(context) == STATUS_IDLE) return false
-        val beat = lastBeatAt(context)
-        return beat > 0L && now - beat > STALL_AFTER_MS
-    }
-
-    /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_BG_STALL). */
-    fun debugForceStale(context: Context, minutesAgo: Long) {
-        prefs(context).edit()
-            .putLong(KEY_HEARTBEAT_AT, System.currentTimeMillis() - minutesAgo * 60_000L)
-            .apply()
-    }
+     *  NO esta corriendo (ver BackgroundHealth). Se mide con [DungeonService.isRunning], no con el
+     *  tiempo desde el ultimo tick: con Doze el Handler del servicio se duerme (en 126 h de log
+     *  real, el 54 % del tiempo el ultimo tick tenia mas de 4 min con el proceso VIVO) y eso no
+     *  es un servicio parado. Con la mazmorra en IDLE no hay nada que avanzar: nunca. */
+    fun isBackgroundStalled(context: Context): Boolean =
+        status(context) != STATUS_IDLE && !DungeonService.isRunning
 
     fun playerPos(context: Context): Pair<Int, Int> =
         prefs(context).getInt(KEY_PLAYER_X, 0) to prefs(context).getInt(KEY_PLAYER_Y, 0)

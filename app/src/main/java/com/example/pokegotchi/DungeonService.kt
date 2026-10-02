@@ -31,6 +31,16 @@ class DungeonService : Service() {
         private const val TICK_INTERVAL_MS = 60_000L
         @Volatile private var liveViewActive = false
 
+        /** true mientras exista la instancia del servicio EN ESTE PROCESO. Es la señal fiable de
+         *  "la mazmorra tiene su segundo plano vivo" (ver DungeonState.isBackgroundStalled): un
+         *  proceso nuevo (el anterior murio) arranca con false, mientras que con Doze el proceso
+         *  sigue vivo y el servicio tambien aunque su Handler duerma. NO se puede usar el latido
+         *  (tiempo desde el ultimo tick): en 126 h de log real, el 54 % del tiempo el latido
+         *  estaba a mas de 4 min con el MISMO proceso vivo (345 huecos asi frente a 3 procesos
+         *  muertos de verdad). */
+        @Volatile var isRunning = false
+            private set
+
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, DungeonService::class.java))
         }
@@ -41,8 +51,6 @@ class DungeonService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    private fun beat() = DungeonState.markHeartbeat(this)
-
     private val tickRunnable = object : Runnable {
         override fun run() {
             // COOLDOWN (pedido explicito del usuario: "el reintento... debe tener un cooldown que
@@ -52,10 +60,6 @@ class DungeonService : Service() {
             // lo que la vista en vivo esta animando. Sin esto, dejar la pantalla de la mazmorra
             // abierta mientras el cooldown corre lo dejaria esperando para siempre.
             val status = DungeonState.status(this@DungeonService)
-            // Latido para el aviso del widget (ver DungeonState.isBackgroundStalled) - se escribe
-            // SIEMPRE, tambien con la vista en vivo abierta o en COOLDOWN, porque prueba que el
-            // propio servicio sigue corriendo, no que haya avanzado la carrera.
-            beat()
             // Guardian de la alarma del widget (pedido explicito del usuario: prevenir que las
             // barras/el huevo se queden parados): este servicio es mucho mas resistente a Doze/MIUI
             // que una alarma, asi que si el tick periodico del widget lleva de sobra sin correr
@@ -92,10 +96,12 @@ class DungeonService : Service() {
     override fun onCreate() {
         super.onCreate()
         DebugLog.log(this, "mazmorra: servicio arrancado")
-        // Solo al CREAR el servicio, no en cada onStartCommand: el tick del widget lo llama una
-        // vez por minuto sobre un servicio ya vivo, y marcar latido ahi taparia un Handler
-        // atascado (el aviso del widget tiene que reflejar que la carrera sigue avanzando).
-        beat()
+        isRunning = true
+        // Si el widget estaba con la interfaz oculta ("dormido") por este servicio parado, ya no
+        // procede - se repinta YA en vez de esperar al siguiente tick del widget (cada 15 min).
+        // Cubre cualquier forma de reanudarlo: toque al Pokemon, abrir la app o un arranque
+        // pedido por el tick.
+        if (BackgroundHealth.isInterfaceHidden(this)) WidgetRefresh.updateWidgets(this)
         NotificationHelper.ensureDungeonChannel(this)
         startForeground(NotificationHelper.NOTIF_ID_DUNGEON, NotificationHelper.buildDungeonNotification(this))
     }
@@ -118,6 +124,7 @@ class DungeonService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isRunning = false
         DebugLog.log(this, "mazmorra: servicio detenido")
         handler.removeCallbacks(tickRunnable)
     }

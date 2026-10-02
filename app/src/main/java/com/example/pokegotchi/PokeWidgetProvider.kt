@@ -98,11 +98,11 @@ class PokeWidgetProvider : AppWidgetProvider() {
         const val ACTION_DEBUG_REPAIR_MECHANIC_SEEN = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_MECHANIC_SEEN"
         // SOLO PARA PRUEBAS (disparado a mano por adb): simula un segundo plano parado para probar
         // que un toque al Pokemon lo reactiva (ver recoverBackgroundOnUserAction). Por defecto
-        // detiene el servicio de la mazmorra y deja su latido como si llevase [minutes] minutos
-        // (10) sin latir; con el extra "tick_minutes" (long) SOLO atrasa el reloj del tick del
-        // widget esos minutos.
+        // detiene el servicio de la mazmorra y quita el acuse de un toque anterior (hace falta un
+        // ACTION_TICK despues para que el widget se repinte); con el extra "tick_minutes" (long)
+        // SOLO atrasa el reloj del tick del widget esos minutos.
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
-        //   -a com.example.pokegotchi.ACTION_DEBUG_BG_STALL --el minutes 10
+        //   -a com.example.pokegotchi.ACTION_DEBUG_BG_STALL
         const val ACTION_DEBUG_BG_STALL = "com.example.pokegotchi.ACTION_DEBUG_BG_STALL"
 
         // Refresco periodico del decaimiento.
@@ -235,9 +235,10 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // quedar listo) - si se pintara antes, ese cambio no se veria en el widget hasta el
         // siguiente redibujado (aunque la notificacion si llegara a tiempo - bug real reportado
         // por el usuario: "me avisa de que ha eclosionado pero el huevo se ve como antes").
-        // Primera vez tras instalar/actualizar: arranca el reloj del aviso de segundo plano (nunca
-        // pisa uno real - este onUpdate tambien lo lanza el refresco periodico del sistema).
-        BackgroundHealth.initIfUnset(context)
+        // Este onUpdate es un refresco COMPLETO (alertas + pintado + alarmas reprogramadas), igual
+        // que un tick: cuenta como tal para el reloj del tick (lo lanzan el refresco periodico del
+        // sistema, abrir la app, un reinicio...).
+        BackgroundHealth.markWidgetTick(context)
         checkAlerts(context)
         for (id in appWidgetIds) render(context, appWidgetManager, id)
         scheduleTick(context)
@@ -365,7 +366,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // mazmorra y el toque al Pokemon para saber si esta alarma se ha perdido. Antes de
                 // nada, tambien para el diagnostico: si el servicio no latia, queda en el log.
                 BackgroundHealth.markWidgetTick(context)
-                if (DungeonState.isBackgroundStalled(context)) DebugLog.log(context, "mazmorra: el servicio no late desde hace rato (visto por el tick del widget)")
+                if (DungeonState.isBackgroundStalled(context)) DebugLog.log(context, "mazmorra: el servicio no esta corriendo (visto por el tick del widget)")
                 // checkAlerts PRIMERO: puede cambiar el estado del huevo (poner uno/avanzar de
                 // fase/quedar listo) - si se pintara antes, ese cambio no se veria hasta el
                 // siguiente redibujado (aunque la notificacion si llegara a tiempo - bug real
@@ -449,17 +450,15 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 }
             }
             ACTION_DEBUG_BG_STALL -> {
-                val minutes = intent.getLongExtra("minutes", 10L)
                 val tickMinutes = intent.getLongExtra("tick_minutes", -1L)
                 BackgroundHealth.debugClearAck(context)
                 if (tickMinutes >= 0) {
-                    // Solo el tick atrasado: no se toca el servicio ni su latido.
+                    // Solo el tick atrasado: no se toca el servicio.
                     BackgroundHealth.debugSetLastTick(context, tickMinutes)
                     DebugLog.log(context, "mazmorra: debug - ultimo tick del widget atrasado $tickMinutes min")
                 } else {
                     context.stopService(Intent(context, DungeonService::class.java))
-                    DungeonState.debugForceStale(context, minutes)
-                    DebugLog.log(context, "mazmorra: debug - servicio detenido y latido atrasado $minutes min (estado=${DungeonState.status(context)})")
+                    DebugLog.log(context, "mazmorra: debug - servicio detenido (estado=${DungeonState.status(context)})")
                 }
             }
             ACTION_DEBUG_DUMP_ASSETS -> {
