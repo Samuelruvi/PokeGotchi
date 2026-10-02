@@ -40,6 +40,9 @@ class DungeonService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+
+    private fun beat() = DungeonState.markHeartbeat(this)
+
     private val tickRunnable = object : Runnable {
         override fun run() {
             // COOLDOWN (pedido explicito del usuario: "el reintento... debe tener un cooldown que
@@ -49,6 +52,20 @@ class DungeonService : Service() {
             // lo que la vista en vivo esta animando. Sin esto, dejar la pantalla de la mazmorra
             // abierta mientras el cooldown corre lo dejaria esperando para siempre.
             val status = DungeonState.status(this@DungeonService)
+            // Latido para el aviso del widget (ver DungeonState.isBackgroundStalled) - se escribe
+            // SIEMPRE, tambien con la vista en vivo abierta o en COOLDOWN, porque prueba que el
+            // propio servicio sigue corriendo, no que haya avanzado la carrera.
+            beat()
+            // Guardian de la alarma del widget (pedido explicito del usuario: prevenir que las
+            // barras/el huevo se queden parados): este servicio es mucho mas resistente a Doze/MIUI
+            // que una alarma, asi que si el tick periodico del widget lleva de sobra sin correr
+            // (alarma perdida o aplazada), lo lanza el servicio - ese tick repinta, avanza el huevo,
+            // manda los avisos y REPROGRAMA la alarma. Solo actua mientras haya mazmorra en marcha
+            // (el servicio no corre si no).
+            if (BackgroundHealth.widgetTickOverdue(this@DungeonService, BackgroundHealth.WATCHDOG_MS)) {
+                DebugLog.log(this@DungeonService, "mazmorra: el tick del widget lleva mas de 25 min sin correr - lo lanza el servicio")
+                sendBroadcast(Intent(this@DungeonService, PokeWidgetProvider::class.java).setAction(PokeWidgetProvider.ACTION_TICK))
+            }
             // Latido de diagnostico (pedido explicito del usuario: "logs... que nos ayude a
             // diagnosticar si no esta funcionando en segundo plano") - un hueco de varios minutos
             // entre dos lineas de latido consecutivas en el log es la prueba directa de que el
@@ -75,6 +92,10 @@ class DungeonService : Service() {
     override fun onCreate() {
         super.onCreate()
         DebugLog.log(this, "mazmorra: servicio arrancado")
+        // Solo al CREAR el servicio, no en cada onStartCommand: el tick del widget lo llama una
+        // vez por minuto sobre un servicio ya vivo, y marcar latido ahi taparia un Handler
+        // atascado (el aviso del widget tiene que reflejar que la carrera sigue avanzando).
+        beat()
         NotificationHelper.ensureDungeonChannel(this)
         startForeground(NotificationHelper.NOTIF_ID_DUNGEON, NotificationHelper.buildDungeonNotification(this))
     }

@@ -33,6 +33,7 @@
             android:name=".StarterActivity"
             android:exported="false" />
 
+
         <activity
             android:name=".TrainerSetupActivity"
             android:exported="false"

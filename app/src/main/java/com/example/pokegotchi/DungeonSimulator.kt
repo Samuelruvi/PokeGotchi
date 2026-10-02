@@ -1659,6 +1659,16 @@ object DungeonSimulator {
      *  es una operacion muy barata), y corre en su propio hilo (ver onStartCommand), nunca en el
      *  principal. */
     fun catchUpIfStalled(context: Context, tickIntervalMs: Long) {
+        // Una sola puesta al dia a la vez: dos arranques casi simultaneos del servicio (widget +
+        // abrir la app, o volver de la vista en vivo) lanzaban dos hilos que recuperaban el MISMO
+        // hueco cada uno - con la carrera en EXPLORING, los ciclos perdidos se contaban doble.
+        if (!catchUpRunning.compareAndSet(false, true)) return
+        try { catchUpIfStalledInner(context, tickIntervalMs) } finally { catchUpRunning.set(false) }
+    }
+
+    private val catchUpRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun catchUpIfStalledInner(context: Context, tickIntervalMs: Long) {
         if (DungeonState.status(context) == DungeonState.STATUS_IDLE) return
         val lastTick = DungeonState.lastTickAt(context)
         if (lastTick <= 0L) return

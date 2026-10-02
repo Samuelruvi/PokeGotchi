@@ -185,13 +185,19 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.btn_dungeon).setOnClickListener { startActivity(Intent(this, DungeonActivity::class.java)) }
         showLevel()
         WidgetRefresh.updateWidgets(this)   // refresca el widget al abrir (regenera sprites de cache antigua)
-        // retoma el avance de fondo (o la espera del cooldown de modo continuo) si el proceso se reinicio a medio explorar/descansar
-        if (DungeonState.isExploring(this) || DungeonState.isInCooldown(this)) DungeonService.start(this)
+        // El arranque del servicio de la mazmorra (retomar el avance de fondo o la espera del
+        // cooldown si el proceso se reinicio a medio explorar) vive SOLO en onResume - onCreate
+        // siempre va seguido de onResume, y hacerlo en los dos lo arrancaba dos veces seguidas.
     }
 
     override fun onResume() {
         super.onResume()
         if (!PetState.hasChosenStarter(this)) return   // aun redirigiendo a StarterActivity
+        // Retoma el avance de fondo de la mazmorra (o la espera del cooldown). Aqui y no en
+        // onCreate: tocar el aviso "mazmorra parada" del widget con la app ya en recientes la
+        // trae al frente SIN pasar por onCreate, y el servicio tiene que reanudarse igualmente.
+        // Idempotente - onStartCommand solo reprograma el ciclo y recupera ciclos perdidos.
+        if (DungeonState.isExploring(this) || DungeonState.isInCooldown(this)) DungeonService.start(this)
         // Abrir la app es evidencia real de que el usuario esta despierto - ver
         // PetState.recordInteraction (aprendizaje de la ventana de noche adaptativa).
         PetState.recordInteraction(this)

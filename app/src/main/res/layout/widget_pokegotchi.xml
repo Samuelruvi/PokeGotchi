@@ -23,8 +23,10 @@
         android:clipChildren="false"
         android:padding="8dp">
 
-        <!-- Nivel + barra de experiencia (azul) -->
+        <!-- Nivel + barra de experiencia (azul). id: para ocultar toda la interfaz y dejar solo al
+             Pokemon cuando el segundo plano esta parado (ver PokeWidgetProvider.applyInterfaceVisibility). -->
         <LinearLayout
+            android:id="@+id/top_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"

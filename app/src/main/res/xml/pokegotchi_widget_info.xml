@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- updatePeriodMillis=30 min (antes 0, sin refresco del sistema): segundo camino de refresco
+     INDEPENDIENTE de la cadena de alarmas propia (PokeWidgetProvider.ACTION_TICK) - si esa cadena
+     se pierde o MIUI/Doze la aplaza, el sistema sigue llamando a onUpdate (que repinta, re-arma las
+     alarmas y enseña el aviso de segundo plano si el tick esta atrasado). 30 min es el minimo
+     que Android respeta. Pedido del usuario: prevenir que las barras/el huevo se queden parados. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="250dp"
     android:minHeight="180dp"
@@ -6,7 +11,7 @@
     android:targetCellHeight="3"
     android:minResizeWidth="180dp"
     android:minResizeHeight="140dp"
-    android:updatePeriodMillis="0"
+    android:updatePeriodMillis="1800000"
     android:autoAdvanceViewId="@id/widget_pokemon"
     android:initialLayout="@layout/widget_pokegotchi"
     android:previewLayout="@layout/widget_pokegotchi"

@@ -96,6 +96,14 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_REPAIR_MECHANIC_SEEN --es name shinx --es keep shinx-female
         const val ACTION_DEBUG_REPAIR_MECHANIC_SEEN = "com.example.pokegotchi.ACTION_DEBUG_REPAIR_MECHANIC_SEEN"
+        // SOLO PARA PRUEBAS (disparado a mano por adb): simula un segundo plano parado para probar
+        // que un toque al Pokemon lo reactiva (ver recoverBackgroundOnUserAction). Por defecto
+        // detiene el servicio de la mazmorra y deja su latido como si llevase [minutes] minutos
+        // (10) sin latir; con el extra "tick_minutes" (long) SOLO atrasa el reloj del tick del
+        // widget esos minutos.
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_BG_STALL --el minutes 10
+        const val ACTION_DEBUG_BG_STALL = "com.example.pokegotchi.ACTION_DEBUG_BG_STALL"
 
         // Refresco periodico del decaimiento.
         private const val TICK_INTERVAL_MS = 15 * 60 * 1000L
@@ -227,6 +235,9 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // quedar listo) - si se pintara antes, ese cambio no se veria en el widget hasta el
         // siguiente redibujado (aunque la notificacion si llegara a tiempo - bug real reportado
         // por el usuario: "me avisa de que ha eclosionado pero el huevo se ve como antes").
+        // Primera vez tras instalar/actualizar: arranca el reloj del aviso de segundo plano (nunca
+        // pisa uno real - este onUpdate tambien lo lanza el refresco periodico del sistema).
+        BackgroundHealth.initIfUnset(context)
         checkAlerts(context)
         for (id in appWidgetIds) render(context, appWidgetManager, id)
         scheduleTick(context)
@@ -294,6 +305,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // evidencia REAL de que el usuario esta despierto - ver PetState.recordInteraction
                 // (aprendizaje de la ventana de noche adaptativa).
                 PetState.recordInteraction(context)
+                recoverBackgroundOnUserAction(context)
                 // Ignora COMPLETAMENTE si ya hay una reaccion o una nube de rechazo en pantalla
                 // (no solo la reaccion "grande"): mientras se este mostrando cualquier cosa de
                 // una pulsacion anterior, un segundo boton no debe tener NINGUN efecto - ni
@@ -349,6 +361,11 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 }
             }
             ACTION_TICK -> {
+                // Reloj del tick (ver BackgroundHealth): lo usan el guardian del servicio de la
+                // mazmorra y el toque al Pokemon para saber si esta alarma se ha perdido. Antes de
+                // nada, tambien para el diagnostico: si el servicio no latia, queda en el log.
+                BackgroundHealth.markWidgetTick(context)
+                if (DungeonState.isBackgroundStalled(context)) DebugLog.log(context, "mazmorra: el servicio no late desde hace rato (visto por el tick del widget)")
                 // checkAlerts PRIMERO: puede cambiar el estado del huevo (poner uno/avanzar de
                 // fase/quedar listo) - si se pintara antes, ese cambio no se veria hasta el
                 // siguiente redibujado (aunque la notificacion si llegara a tiempo - bug real
@@ -369,7 +386,16 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // (DungeonService), asi que si ese proceso murio, este tick le da una oportunidad
                 // extra de rearrancar (y disparar su propio catch-up) sin depender solo de que el
                 // jugador abra la app a mano. Misma guardia que MainActivity.onCreate.
-                if (DungeonState.isExploring(context) || DungeonState.isInCooldown(context)) DungeonService.start(context)
+                // try/catch: desde una alarma en segundo plano, Android 12+ puede RECHAZAR arrancar un
+                // servicio en primer plano (ForegroundServiceStartNotAllowedException) - sin esto la
+                // excepcion tumbaba el receiver ANTES de scheduleTick y la cadena de ticks del
+                // widget se cortaba para siempre (ya paso: crash real el 2026-09-30 12:08). Si falla,
+                // el servicio sigue parado hasta que el jugador toque al Pokemon o abra la app.
+                try {
+                    if (DungeonState.isExploring(context) || DungeonState.isInCooldown(context)) DungeonService.start(context)
+                } catch (t: Throwable) {
+                    DebugLog.log(context, "mazmorra: el widget no pudo reanudar el servicio ($t)")
+                }
                 scheduleTick(context)
             }
             ACTION_DEBUG_REVERT -> {
@@ -422,6 +448,20 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
                 }
             }
+            ACTION_DEBUG_BG_STALL -> {
+                val minutes = intent.getLongExtra("minutes", 10L)
+                val tickMinutes = intent.getLongExtra("tick_minutes", -1L)
+                BackgroundHealth.debugClearAck(context)
+                if (tickMinutes >= 0) {
+                    // Solo el tick atrasado: no se toca el servicio ni su latido.
+                    BackgroundHealth.debugSetLastTick(context, tickMinutes)
+                    DebugLog.log(context, "mazmorra: debug - ultimo tick del widget atrasado $tickMinutes min")
+                } else {
+                    context.stopService(Intent(context, DungeonService::class.java))
+                    DungeonState.debugForceStale(context, minutes)
+                    DebugLog.log(context, "mazmorra: debug - servicio detenido y latido atrasado $minutes min (estado=${DungeonState.status(context)})")
+                }
+            }
             ACTION_DEBUG_DUMP_ASSETS -> {
                 // SOLO PARA PRUEBAS: vuelca a ficheros PNG los bitmaps REALES del huevo (fase 0)
                 // y de la nube (con el angulo de cola que se pida por extra, para sacar varias
@@ -450,6 +490,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // el proceso mientras suena. Solo grito, no cuida nada de verdad - no quita
                 // ningun aviso (ver discusion en ACTION_FEED/PET/WASH).
                 PetState.recordInteraction(context)
+                recoverBackgroundOnUserAction(context)
                 SoundManager.playCry(context)
                 val pending = goAsync()
                 Handler(Looper.getMainLooper()).postDelayed({ pending.finish() }, 1200)
@@ -596,6 +637,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
         applyEggIndicator(context, views)
         val ids = mgr.getAppWidgetIds(ComponentName(context, PokeWidgetProvider::class.java))
         ids.firstOrNull()?.let { applyAdaptiveEggAndCloudLayout(context, views, mgr, it, s) }
+        applyInterfaceVisibility(context, views, mgr, ids.firstOrNull())
         // Bug real (confirmado en el dispositivo con toques normales, no solo en pruebas):
         // partiallyUpdateAppWidget FUSIONA esta actualizacion con el arbol YA comprometido en el
         // lanzador - varias actualizaciones parciales seguidas (rechazar accion tras accion) sin
@@ -868,6 +910,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
         applyNeedIndicators(context, views, s)
         applyEggIndicator(context, views, eggShakeAngleDeg)
         applyAdaptiveEggAndCloudLayout(context, views, mgr, appWidgetId, s, overlayGrow)
+        applyInterfaceVisibility(context, views, mgr, appWidgetId)
 
         views.setOnClickPendingIntent(R.id.btn_feed, actionPI(context, ACTION_FEED, appWidgetId))
         views.setOnClickPendingIntent(R.id.btn_pet, actionPI(context, ACTION_PET, appWidgetId))
@@ -1216,8 +1259,79 @@ class PokeWidgetProvider : AppWidgetProvider() {
      *  cualquier necesidad real, para dejar claro que NO es un fallo de la app), o null si no
      *  hay nada que mostrar. */
     private fun currentNeedIcon(context: Context, s: PetState.Stats): String? {
+        // Segundo plano parado: la interfaz esta oculta (ver applyInterfaceVisibility) y la nube
+        // de siempre del Pokemon dice POR QUE - "💤", se ha quedado dormido - y tocarlo lo
+        // despierta (grito + interfaz de vuelta, ya actualizada). Pedido del usuario: darle un
+        // sentido al hueco para que el jugador entienda que pasa y que tiene que hacer.
+        if (BackgroundHealth.shouldHideInterface(context)) return "💤"
         val rejected = PetState.activeRejectFlash(context)
         return if (rejected != null) "🚫" else PetState.mostNeededAction(context, s)?.let { iconFor(it) }
+    }
+
+    /** Segundo plano parado => se OCULTA toda la interfaz (nivel/XP, barras, botones y huevo) y se
+     *  deja al Pokemon "dormido" (nube con 💤, ver currentNeedIcon) sobre el fondo; tocarlo lo
+     *  despierta y devuelve la interfaz ya actualizada (ver recoverBackgroundOnUserAction) -
+     *  pedido explicito del usuario, en vez de un icono de aviso. INVISIBLE (no GONE) para los bloques que ocupan sitio: el hueco del Pokemon
+     *  y su posicion no cambian. Va AL FINAL de render()/renderStatsOnly(): tiene que pisar la
+     *  visibilidad que ya hayan puesto applyChromeSize/applyNeedIndicators/applyEggIndicator, y al
+     *  volver (no oculta) deja las cosas como las dejan esas funciones. */
+    private fun applyInterfaceVisibility(context: Context, views: RemoteViews, mgr: AppWidgetManager, appWidgetId: Int?) {
+        val hidden = BackgroundHealth.shouldHideInterface(context)
+        BackgroundHealth.noteInterfaceState(context, hidden)
+        if (hidden) {
+            for (id in intArrayOf(R.id.top_row, R.id.stats_stacked, R.id.stats_row, R.id.button_row)) {
+                views.setViewVisibility(id, View.INVISIBLE)
+            }
+            // La nube NO se oculta: applyNeedIndicators ya la ha dejado visible con el "💤" (ver
+            // currentNeedIcon). El huevo si, es parte de la interfaz que se esconde.
+            for (id in intArrayOf(R.id.egg_overlay, R.id.egg_flipper)) {
+                views.setViewVisibility(id, View.GONE)
+            }
+        } else {
+            views.setViewVisibility(R.id.top_row, View.VISIBLE)
+            views.setViewVisibility(R.id.button_row, View.VISIBLE)
+            // applyChromeSize ya decide cual de las 2 variantes de barras se ve (segun el ancho),
+            // pero sale sin hacer nada si no hay opciones del widget - entonces las barras se
+            // quedarian INVISIBLE tras un episodio de interfaz oculta.
+            val minW = try {
+                if (appWidgetId != null) mgr.getAppWidgetOptions(appWidgetId).getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) else 0
+            } catch (e: Exception) { 0 }
+            val fourCol = minW > 0 && isFourColFamily(minW)
+            views.setViewVisibility(R.id.stats_stacked, if (fourCol) View.GONE else View.VISIBLE)
+            views.setViewVisibility(R.id.stats_row, if (fourCol) View.VISIBLE else View.GONE)
+        }
+    }
+
+    /** Tocar al Pokemon (o cualquier boton) cuando el widget se ve parado - barras quietas, huevo
+     *  sin cambiar de fase - lo reactiva, sin ningun icono de aviso (pedido explicito del usuario:
+     *  "que el jugador, cuando vea el widget en ese estado, tenga que clickar al pokemon para que
+     *  se reactive"). Un widget no puede avisar de que esta parado (no ejecuta codigo), pero el
+     *  jugador lo ve; el toque lo detecta (servicio de la mazmorra sin latir, tick del widget
+     *  atrasado), hace lo mismo que un tick - alertas, alarmas reprogramadas, reloj - pide
+     *  arrancar el servicio y REPINTA YA para que se vea el resultado al instante. No hace nada
+     *  si el segundo plano esta sano. Un clic del usuario en el widget cuenta como interaccion
+     *  del usuario para Android (a diferencia de la alarma del tick): si aun asi bloquea el
+     *  arranque del servicio, queda en el log. */
+    private fun recoverBackgroundOnUserAction(context: Context) {
+        if (!BackgroundHealth.needsRecovery(context)) return
+        // Toque del jugador = acuse: la interfaz vuelve (y se queda un rato) aunque no se consiga
+        // reanudar algo, para no dejarla oculta para siempre (ver BackgroundHealth.ackRecovery).
+        BackgroundHealth.ackRecovery(context)
+        val serviceStalled = DungeonState.isBackgroundStalled(context)
+        DebugLog.log(context, "mazmorra: toque del usuario con el segundo plano parado - reactivando (servicio parado=$serviceStalled, tick atrasado=${BackgroundHealth.widgetTickOverdue(context)})")
+        checkAlerts(context)
+        scheduleTick(context)
+        scheduleCryCheck(context)
+        BackgroundHealth.markWidgetTick(context)
+        if (serviceStalled) {
+            try {
+                DungeonService.start(context)
+                DebugLog.log(context, "mazmorra: arranque del servicio pedido desde el toque")
+            } catch (t: Throwable) {
+                DebugLog.log(context, "mazmorra: Android bloqueo reanudar el servicio desde el toque ($t)")
+            }
+        }
+        renderStatsOnly(context, AppWidgetManager.getInstance(context))
     }
 
     /**
