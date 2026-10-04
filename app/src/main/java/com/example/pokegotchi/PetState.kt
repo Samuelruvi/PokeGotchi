@@ -968,6 +968,93 @@ object PetState {
         )
     }
 
+    /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_VERIFY_ACTION_XP): comprueba con el
+     *  codigo REAL (tryApplyAction, sin simular nada) que comer/acariciar/lavar suben experiencia.
+     *  Para cada accion fuerza la necesidad de esa stat a 0, la ejecuta y mide la XP antes/despues
+     *  (incluye la XP pasiva de unos milisegundos, despreciable); luego repite la MISMA accion para
+     *  comprobar que ahora se RECHAZA sin dar XP. Todo dentro del cerrojo de stats y, al final,
+     *  restaura las 3 barras, la XP y los 3 umbrales del Pokemon activo tal como estaban - no
+     *  cambia nada de la partida. Se salta las especies con mecanica propia en tryApplyAction
+     *  (cambiarian de postura/fase y no se podria deshacer). Devuelve el informe (una linea por
+     *  accion). */
+    fun debugVerifyActionXp(context: Context): String {
+        val species = currentPokemon(context)
+        if (species in setOf("cramorant", "aegislash", "solgaleo", "lunala")) {
+            return "no probado: $species tiene mecanica propia al aceptar una accion (se activaria de verdad)"
+        }
+        val report = StringBuilder()
+        synchronized(statsWriteLock) {
+            val p = prefs(context)
+            val original = loadWithDecay(context)
+            val originalBg = currentBg(context)
+            val threshKeys = listOf(KEY_THRESH_HEALTH, KEY_THRESH_HYGIENE, KEY_THRESH_HAPPY)
+            val originalThresholds = threshKeys.associateWith { p.getFloat(k(species, it), -1f) }
+            // Un fondo que NO beneficia a esta especie (para medir el x1) - el primero de la
+            // lista de fondos por tipo que ninguno de sus tipos tiene asignado.
+            val myTypes = typesOf(context, species)
+            val nonMatchingBg = BG_FOR_TYPE.values.flatten().distinct()
+                .firstOrNull { bg -> myTypes.none { t -> BG_FOR_TYPE[t]?.contains(bg) == true } }
+
+            fun pass(label: String) {
+                val mult = xpMultiplier(context, species)
+                report.append("[$label] fondo=${currentBg(context)} x$mult -> esperado +${ACTION_XP * mult} por accion aceptada\n")
+                for (action in listOf(PokeWidgetProvider.ACTION_FEED, PokeWidgetProvider.ACTION_PET, PokeWidgetProvider.ACTION_WASH)) {
+                    val cur = loadWithDecay(context)
+                    val needy = Stats(
+                        health = if (action == PokeWidgetProvider.ACTION_FEED) 0f else cur.health,
+                        hygiene = if (action == PokeWidgetProvider.ACTION_WASH) 0f else cur.hygiene,
+                        happiness = if (action == PokeWidgetProvider.ACTION_PET) 0f else cur.happiness,
+                        xp = cur.xp
+                    )
+                    save(context, needy, System.currentTimeMillis(), durable = true)
+                    val xp0 = loadWithDecay(context).xp
+                    val r1 = tryApplyAction(context, action)
+                    val xp1 = loadWithDecay(context).xp
+                    val r2 = tryApplyAction(context, action)   // FEED/WASH: ya no hace falta, debe rechazarse
+                    val xp2 = loadWithDecay(context).xp
+                    report.append("  ${action.substringAfterLast('_')}: aceptada=${r1.applied} xp +%.3f".format(xp1 - xp0))
+                        .append(" | repetida: aceptada=${r2.applied} xp +%.3f\n".format(xp2 - xp1))
+                }
+            }
+
+            // La subida de nivel POR UNA ACCION (la que dispara el sonido de nivel): deja la XP a 1
+            // punto del siguiente nivel y comprueba que cada accion cruza el umbral y lo avisa.
+            fun levelUpPass() {
+                report.append("[subida de nivel por accion: XP a 1 punto del siguiente nivel]\n")
+                for (action in listOf(PokeWidgetProvider.ACTION_FEED, PokeWidgetProvider.ACTION_PET, PokeWidgetProvider.ACTION_WASH)) {
+                    val cur = loadWithDecay(context)
+                    val lvl0 = levelOf(context, cur.xp, species)
+                    val nearXp = cumXp(lvl0 + 1, context, species) - 1f
+                    save(context, Stats(
+                        health = if (action == PokeWidgetProvider.ACTION_FEED) 0f else cur.health,
+                        hygiene = if (action == PokeWidgetProvider.ACTION_WASH) 0f else cur.hygiene,
+                        happiness = if (action == PokeWidgetProvider.ACTION_PET) 0f else cur.happiness,
+                        xp = nearXp
+                    ), System.currentTimeMillis(), durable = true)
+                    val r = tryApplyAction(context, action)
+                    val lvl1 = levelOf(context, loadWithDecay(context).xp, species)
+                    report.append("  ${action.substringAfterLast('_')}: aceptada=${r.applied} subioDeNivel=${r.leveledUp} nivel $lvl0 -> $lvl1\n")
+                }
+            }
+
+            try {
+                pass("fondo actual")
+                if (nonMatchingBg != null) {
+                    setBg(context, nonMatchingBg)
+                    pass("fondo que NO le gusta")
+                    setBg(context, originalBg)
+                } else report.append("[sin fondo que no le guste: no se mide el x1]\n")
+                levelUpPass()
+            } finally {
+                setBg(context, originalBg)
+                p.edit().apply { originalThresholds.forEach { (key, v) -> if (v > 0f) putFloat(k(species, key), v) else remove(k(species, key)) } }.commit()
+                save(context, original, System.currentTimeMillis(), durable = true)
+            }
+            report.append("restaurado: fondo=$originalBg salud %.1f higiene %.1f felicidad %.1f xp %.2f".format(original.health, original.hygiene, original.happiness, original.xp))
+        }
+        return report.toString()
+    }
+
     /** SOLO PARA EL MENU DEBUG: fija a mano cualquier subconjunto de estadisticas de un
      *  individuo CUALQUIERA (no hace falta que sea el activo) - null en cualquiera = no tocar
      *  esa. A diferencia de debugSetActiveStats, parte de rawStats (congeladas, sin

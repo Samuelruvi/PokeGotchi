@@ -104,6 +104,12 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_BG_STALL
         const val ACTION_DEBUG_BG_STALL = "com.example.pokegotchi.ACTION_DEBUG_BG_STALL"
+        // SOLO PARA PRUEBAS: comprueba con el codigo real que comer/acariciar/lavar suben XP y deja
+        // el Pokemon activo exactamente como estaba (ver PetState.debugVerifyActionXp). El informe
+        // queda en el log (buscar "verif. xp de acciones").
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_VERIFY_ACTION_XP
+        const val ACTION_DEBUG_VERIFY_ACTION_XP = "com.example.pokegotchi.ACTION_DEBUG_VERIFY_ACTION_XP"
 
         // Refresco periodico del decaimiento.
         private const val TICK_INTERVAL_MS = 15 * 60 * 1000L
@@ -448,6 +454,11 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     PetState.repairMechanicFormsSeen(context, name, keep)
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
                 }
+            }
+            ACTION_DEBUG_VERIFY_ACTION_XP -> {
+                val report = PetState.debugVerifyActionXp(context)
+                DebugLog.log(context, "verif. xp de acciones (${PetState.currentPokemon(context)}):\n$report")
+                renderAll(context, mgr)
             }
             ACTION_DEBUG_BG_STALL -> {
                 val tickMinutes = intent.getLongExtra("tick_minutes", -1L)
