@@ -828,7 +828,7 @@ object PetState {
      *  sonar cuando pasa como consecuencia directa de tocar el widget, nunca por la xp pasiva que
      *  se suma sola con el tiempo (ver loadWithDecay) - por eso se compara el nivel justo antes y
      *  despues de sumar SOLO el ACTION_XP de esta pulsada, no desde la ultima vez que se miró. */
-    data class ActionResult(val applied: Boolean, val leveledUp: Boolean)
+    data class ActionResult(val applied: Boolean, val leveledUp: Boolean, val xpGained: Float = 0f)
 
     // Cerrojo compartido para el patron leer-sumar-escribir de las stats de un individuo (XP
     // sobre todo) - pedido explicito del usuario al auditar si la mazmorra podia aplicar XP real
@@ -855,7 +855,8 @@ object PetState {
             }
             val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, currentPokemon(context))
             sideEffectFor(action, mHealth, mHappy, mHygiene)?.invoke(s)
-            s.xp += ACTION_XP * xpMultiplier(context, currentPokemon(context))
+            val xpGained = ACTION_XP * xpMultiplier(context, currentPokemon(context))
+            s.xp += xpGained
             val leveledUp = levelOf(context, s.xp, currentPokemon(context)) > levelBefore
             // durable=true (commit sincrono): esta escritura tiene que estar en disco YA al volver
             // de onReceive. Con apply() (asincrono) existia una rendija teorica: si MIUI mata el
@@ -865,7 +866,7 @@ object PetState {
             // pareciendo una animacion "encolada". MIUI es conocido por matar procesos en segundo
             // plano de forma agresiva, asi que esto es una hipotesis real, no solo teorica.
             save(context, s, System.currentTimeMillis(), durable = true)
-            result = ActionResult(true, leveledUp)
+            result = ActionResult(true, leveledUp, xpGained)
         }
         if (!result.applied) return result
         // Nuevo "ciclo de necesidad" para esta stat: se sortea un umbral fresco (no siempre el

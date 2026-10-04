@@ -21,6 +21,7 @@ import android.os.Process
 import android.util.Log
 import android.util.TypedValue
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.RemoteViews
 import java.io.File
 import kotlin.math.roundToInt
@@ -110,6 +111,28 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
         //   -a com.example.pokegotchi.ACTION_DEBUG_VERIFY_ACTION_XP
         const val ACTION_DEBUG_VERIFY_ACTION_XP = "com.example.pokegotchi.ACTION_DEBUG_VERIFY_ACTION_XP"
+
+        // "+N XP" bajo el nivel (ver XpFx): fotogramas (de 95 ms) que dura el numero desde el
+        // fotograma de la recompensa de cada efecto (cryFrame: justo cuando salen los corazones),
+        // en que punto de su vida se suma al nivel, y cuanto mas abajo del nivel EMPIEZA (dp)
+        // antes de subir hasta pegarse a el.
+        private const val XP_FX_LIFE = 14
+        private const val XP_FX_MERGE = 0.8f
+        private const val XP_FX_RISE_DP = 9f
+
+        // SOLO PARA PRUEBAS: pinta el widget (mismo layout y mismo applyXpGain/nivel/barra) en el
+        // propio proceso y lo guarda como PNG en filesDir (debug_xpview_<n>.png), con el "+N XP" en
+        // varios momentos de su vida - la forma de ver su sitio bajo el nivel sin capturar la
+        // pantalla del movil. Extra opcional "xp" (float, 10 por defecto).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW --ef xp 10
+        const val ACTION_DEBUG_DUMP_XP_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW"
+
+        // SOLO PARA PRUEBAS: repite la animacion REAL de una accion con el "+N XP" bajo el nivel SIN
+        // tocar ninguna estadistica ni la XP (ni gasta la necesidad del Pokemon): suena y se ve como
+        // el original, pero no cuenta. Extras opcionales: "kind" (feed|pet|wash, feed por defecto)
+        // y "xp" (float, 10 por defecto).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_XP_REPLAY --es kind feed --ef xp 10
+        const val ACTION_DEBUG_XP_REPLAY = "com.example.pokegotchi.ACTION_DEBUG_XP_REPLAY"
 
         // Refresco periodico del decaimiento.
         private const val TICK_INTERVAL_MS = 15 * 60 * 1000L
@@ -206,6 +229,13 @@ class PokeWidgetProvider : AppWidgetProvider() {
      * corazones justo cuando el Pokémon grita, como al terminar de comer").
      */
     private data class Fx(val frames: Int, val interval: Long, val cryFrame: Int)
+
+    // "+N XP" bajo el nivel (pedido explicito del usuario: que se vea debajo del nivel "como si se
+    // juntase con el nivel para que se sume", no sobre el Pokemon). [phase] = progreso del numero:
+    // negativo = aun no ha salido, 0..1 = visible (sube hacia el nivel y se desvanece), >= 1 = ya
+    // se ha juntado. Mientras [phase] < XP_FX_MERGE el nivel y la barra siguen mostrando la XP de
+    // ANTES de la accion (ver render): al juntarse el numero con el nivel, es cuando se suman.
+    private class XpFx(val gained: Float, val phase: Float)
     // 48 frames x ~95 ms = ~4.6 s (feed/wash). "pet" se recorta a 40 fotogramas PARA LA MANO: el
     // ultimo vaiven completo (centro-lado-centro) acaba en el fotograma 36 (ver
     // EffectGenerator.drawPet, PET_REF_FRAMES), y los que seguian (37..47) solo mostraban ese
@@ -346,7 +376,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
                         // markAccepted se llama DENTRO de playReactionOnce, al terminar de verdad
                         // la animacion (no aqui, al empezarla) - asi ACTION_COOLDOWN_MS da un
                         // margen real DESPUES del gesto, en vez de solaparse con su propia duracion.
-                        playReactionOnce(context, action, kindFor(action))
+                        playReactionOnce(context, action, kindFor(action), result.xpGained)
                     } else {
                         dbg(context, "$action RECHAZADO (no hacia falta)")
                         // No hace falta ahora mismo: se rechaza (sin cambiar stats) con un
@@ -453,6 +483,53 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     val keep = intent.getStringExtra("keep")
                     PetState.repairMechanicFormsSeen(context, name, keep)
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
+                }
+            }
+            ACTION_DEBUG_XP_REPLAY -> {
+                val kind = intent.getStringExtra("kind") ?: "feed"
+                val xp = intent.getFloatExtra("xp", 10f)
+                if (reactionRunning) DebugLog.log(context, "debug: xp replay ignorado (ya hay una reaccion en marcha)")
+                else {
+                    DebugLog.log(context, "debug: xp replay $kind +$xp (sin tocar estadisticas)")
+                    playReactionOnce(context, when (kind) { "pet" -> ACTION_PET; "wash" -> ACTION_WASH; else -> ACTION_FEED }, kind, xp)
+                }
+            }
+            ACTION_DEBUG_DUMP_XP_VIEW -> {
+                try {
+                    val gained = intent.getFloatExtra("xp", 10f)
+                    val s = PetState.loadWithDecay(context)
+                    val dm = context.resources.displayMetrics
+                    val wPx = (340 * dm.density).roundToInt(); val hPx = (400 * dm.density).roundToInt()
+                    val bgRes = context.resources.getIdentifier(PetState.currentBg(context), "drawable", context.packageName)
+                    val poke = activeSpriteName(context)
+                    val styleKey = PetState.currentStyleKey(context)
+                    val sprite = BitmapFactory.decodeFile(SpriteRepository.frameFile(context, styleKey, poke, 0).absolutePath)
+                    var n = 0
+                    for (ph in floatArrayOf(-0.2f, 0.02f, 0.3f, 0.6f, 0.78f, 0.9f, 1.1f)) {
+                        val fx = XpFx(gained, ph)
+                        val views = RemoteViews(context.packageName, R.layout.widget_pokegotchi)
+                        if (bgRes != 0) views.setImageViewResource(R.id.widget_bg, bgRes)
+                        val sLevel = if (fx.phase < XP_FX_MERGE) s.copy(xp = s.xp - fx.gained) else s
+                        applyLevelAndEvolveCta(context, views, sLevel)
+                        views.setProgressBar(R.id.xp_bar, 100, (PetState.progressOf(context, sLevel.xp, PetState.currentPokemon(context)) * 100).toInt(), false)
+                        applyXpGain(context, views, fx)
+                        setStatBars(views, s.health.toInt(), s.hygiene.toInt(), s.happiness.toInt())
+                        if (sprite != null) {
+                            views.setViewVisibility(R.id.fx_overlay, View.VISIBLE)
+                            views.setImageViewBitmap(R.id.fx_overlay, sprite)
+                        }
+                        val view = views.apply(context, FrameLayout(context))
+                        view.measure(View.MeasureSpec.makeMeasureSpec(wPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(hPx, View.MeasureSpec.EXACTLY))
+                        view.layout(0, 0, wPx, hPx)
+                        val bmp = Bitmap.createBitmap(wPx, hPx, Bitmap.Config.ARGB_8888)
+                        view.draw(Canvas(bmp))
+                        File(context.filesDir, "debug_xpview_$n.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        bmp.recycle()
+                        DebugLog.log(context, "debug: xpview $n fase=$ph nivel=${PetState.levelOf(context, sLevel.xp, PetState.currentPokemon(context))} xp_gain visible=${view.findViewById<View>(R.id.xp_gain).visibility == View.VISIBLE}")
+                        n++
+                    }
+                } catch (e: Throwable) {
+                    DebugLog.log(context, "debug: xpview FALLO: $e")
                 }
             }
             ACTION_DEBUG_VERIFY_ACTION_XP -> {
@@ -643,6 +720,10 @@ class PokeWidgetProvider : AppWidgetProvider() {
         setStatBars(views, s.health.toInt(), s.hygiene.toInt(), s.happiness.toInt())
         applyLevelAndEvolveCta(context, views, s)
         views.setProgressBar(R.id.xp_bar, 100, (PetState.progressOf(context, s.xp, PetState.currentPokemon(context)) * 100).toInt(), false)
+        // Una actualizacion parcial se FUSIONA con lo ya pintado: si el proceso murio a mitad de
+        // una animacion el "+N XP" se quedaria visible - se esconde, salvo que haya una reaccion
+        // en marcha (entonces lo gestiona su propio bucle, ver playReactionOnce).
+        if (!reactionRunning) views.setViewVisibility(R.id.xp_gain, View.GONE)
         applyNeedIndicators(context, views, s)
         applyEggIndicator(context, views)
         val ids = mgr.getAppWidgetIds(ComponentName(context, PokeWidgetProvider::class.java))
@@ -684,6 +765,28 @@ class PokeWidgetProvider : AppWidgetProvider() {
         views.setProgressBar(R.id.stat_happiness_row, 100, happiness, false)
     }
 
+    /** El "+N XP" bajo el nivel (ver XpFx): sale ya pegado debajo del nivel, un poco mas abajo, y
+     *  SUBE hasta tocarlo mientras se desvanece - como si se sumase a el. Fuera de [0, 1) de fase
+     *  no se ve. Va dentro del propio widget (RemoteViews: texto + relleno superior + alfa), no
+     *  dibujado sobre el Pokemon. */
+    private fun applyXpGain(context: Context, views: RemoteViews, xpFx: XpFx?) {
+        if (xpFx == null || xpFx.phase < 0f || xpFx.phase >= 1f) {
+            views.setViewVisibility(R.id.xp_gain, View.GONE)
+            return
+        }
+        val p = xpFx.phase
+        val density = context.resources.displayMetrics.density
+        val alpha = when {
+            p < 0.15f -> p / 0.15f
+            p > 0.7f -> (1f - p) / 0.3f
+            else -> 1f
+        }.coerceIn(0f, 1f)
+        views.setTextViewText(R.id.xp_gain, "+${xpFx.gained.roundToInt()} XP")
+        views.setViewPadding(R.id.xp_gain, 0, (XP_FX_RISE_DP * (1f - p) * density).roundToInt(), 0, 0)
+        views.setFloat(R.id.xp_gain, "setAlpha", alpha)
+        views.setViewVisibility(R.id.xp_gain, View.VISIBLE)
+    }
+
     /** Texto de nivel (+ aviso de evolucion si toca) y su click para abrir la app, mas el boton
      *  dedicado en forma de Poke Ball (mismo destino, ambos por separado - pedido explicito del
      *  usuario para tener un boton claro de abrir la app, no solo el texto de nivel). Compartido
@@ -707,7 +810,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
      * tamaño/centro del Pokemon actual y se pintan en fx_overlay (setImageViewBitmap) desde un
      * hilo de fondo. Los sonidos van por Handler (timing preciso). goAsync mantiene el proceso.
      */
-    private fun playReactionOnce(context: Context, action: String, kind: String) {
+    private fun playReactionOnce(context: Context, action: String, kind: String, xpGained: Float = 0f) {
         val mgr = AppWidgetManager.getInstance(context)
         val ids = mgr.getAppWidgetIds(ComponentName(context, PokeWidgetProvider::class.java))
         val fx = fxFor(kind)
@@ -773,7 +876,10 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // "pet": el bucle tiene que seguir mas alla de [fx.frames] para que la rafaga final de
         // corazones (arrancada en el grito, ver EffectGenerator.petBurstEndFrame) se vea entera,
         // no cortada a medias. El resto de kinds no cambia (cryFrame ya cae dentro de frames).
-        val renderFrames = if (kind == "pet") maxOf(fx.frames, EffectGenerator.petBurstEndFrame(fx.cryFrame) + 1) else fx.frames
+        var renderFrames = if (kind == "pet") maxOf(fx.frames, EffectGenerator.petBurstEndFrame(fx.cryFrame) + 1) else fx.frames
+        // El "+N XP" sale en el fotograma de la recompensa (cryFrame) y dura XP_FX_LIFE: el bucle
+        // tiene que llegar hasta que acabe (solo "pet" se queda corto, por la rafaga de corazones).
+        if (xpGained > 0f) renderFrames = maxOf(renderFrames, fx.cryFrame + XP_FX_LIFE + 1)
         // Margen extra alrededor del sprite para que la mano/corazones nunca se recorten por el
         // borde (ver EffectGenerator.padFor - bug real reportado con Luxio: "la mano se corta en
         // la izquierda y los corazones tambien"). overlayGrow es cuanto hay que agrandar la CAJA
@@ -815,7 +921,8 @@ class PokeWidgetProvider : AppWidgetProvider() {
 
                     // update COMPLETO (no parcial) con el composite en el overlay, para no
                     // chocar con el addView del flipper.
-                    ids.forEach { render(context, mgr, it, comp, overlayGrow = overlayGrow) }
+                    val xpFx = if (xpGained > 0f) XpFx(xpGained, (i - fx.cryFrame).toFloat() / XP_FX_LIFE) else null
+                    ids.forEach { render(context, mgr, it, comp, overlayGrow = overlayGrow, xpFx = xpFx) }
                     val targetElapsed = (i + 1) * fx.interval
                     val actualElapsed = System.currentTimeMillis() - t0
                     val sleepMs = targetElapsed - actualElapsed
@@ -873,7 +980,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
      *  la del hueco real del widget, podia dejar un margen de letterbox que lo desplazaba). */
     private fun render(
         context: Context, mgr: AppWidgetManager, appWidgetId: Int, overlayBmp: Bitmap? = null,
-        eggShakeAngleDeg: Float = 0f, overlayGrow: Float = 1f
+        eggShakeAngleDeg: Float = 0f, overlayGrow: Float = 1f, xpFx: XpFx? = null
     ) {
         if (!PetState.hasChosenStarter(context)) { renderWelcome(context, mgr, appWidgetId); return }
         val s = PetState.loadWithDecay(context)
@@ -915,8 +1022,13 @@ class PokeWidgetProvider : AppWidgetProvider() {
         }
 
         setStatBars(views, s.health.toInt(), s.hygiene.toInt(), s.happiness.toInt())
-        applyLevelAndEvolveCta(context, views, s)
-        views.setProgressBar(R.id.xp_bar, 100, (PetState.progressOf(context, s.xp, PetState.currentPokemon(context)) * 100).toInt(), false)
+        // Mientras el "+N XP" no se haya juntado con el nivel, nivel y barra muestran la XP de
+        // ANTES de la accion (la accion ya la sumo al tocar el boton): el numero "se suma" al
+        // llegar, no antes. Solo cambian nivel/barra/aviso de evolucion, el resto usa [s] real.
+        val sLevel = if (xpFx != null && xpFx.phase < XP_FX_MERGE) s.copy(xp = s.xp - xpFx.gained) else s
+        applyLevelAndEvolveCta(context, views, sLevel)
+        views.setProgressBar(R.id.xp_bar, 100, (PetState.progressOf(context, sLevel.xp, PetState.currentPokemon(context)) * 100).toInt(), false)
+        applyXpGain(context, views, xpFx)
         applyNeedIndicators(context, views, s)
         applyEggIndicator(context, views, eggShakeAngleDeg)
         applyAdaptiveEggAndCloudLayout(context, views, mgr, appWidgetId, s, overlayGrow)
@@ -1292,6 +1404,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
             for (id in intArrayOf(R.id.top_row, R.id.stats_stacked, R.id.stats_row, R.id.button_row)) {
                 views.setViewVisibility(id, View.INVISIBLE)
             }
+            views.setViewVisibility(R.id.xp_gain, View.GONE)   // cuelga del nivel, que tambien se esconde
             // La nube NO se oculta: applyNeedIndicators ya la ha dejado visible con el "💤" (ver
             // currentNeedIcon). El huevo si, es parte de la interfaz que se esconde.
             for (id in intArrayOf(R.id.egg_overlay, R.id.egg_flipper)) {

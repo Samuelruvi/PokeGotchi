@@ -181,4 +181,25 @@
             <Button android:id="@+id/btn_wash" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="&#128703;" android:textSize="16sp" android:background="@drawable/btn_action_bg" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- "+N XP" al ganar experiencia con una accion: pegado DEBAJO del texto de nivel (esquina
+         superior izquierda, mismo margen que el relleno de content_root) y por encima de todo lo
+         demas. Pedido explicito del usuario: que se vea bajo el nivel "como si se juntase con el
+         nivel para que se sume", no sobre el Pokemon. Oculto por defecto; texto, relleno superior
+         (para que suba hacia el nivel) y alfa los pone PokeWidgetProvider.applyXpGain solo durante
+         la animacion de la accion. No es clicable: los toques pasan a lo que hay debajo. -->
+    <TextView
+        android:id="@+id/xp_gain"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="27dp"
+        android:visibility="gone"
+        android:text="+5 XP"
+        android:textStyle="bold"
+        android:textSize="13sp"
+        android:textColor="#FFF176"
+        android:shadowColor="#000000"
+        android:shadowDx="1" android:shadowDy="1" android:shadowRadius="3" />
 </FrameLayout>
