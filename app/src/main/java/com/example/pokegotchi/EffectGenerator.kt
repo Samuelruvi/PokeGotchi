@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.drawable.GradientDrawable
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import kotlin.math.abs
@@ -768,6 +770,39 @@ object EffectGenerator {
             container.addView(star)
             star.postDelayed({ sparkleLoop(star) }, i * 180L)
         }
+    }
+
+    // ---- LEGENDARIO/MITICO: borde morado que late ----
+    // Pedido explicito del usuario: las estrellitas ✨ son SOLO del shiny (ver playShinySparkles) -
+    // el legendario/mitico se distingue con un borde morado que "respira" en vez de compartirlas.
+    private const val LEGENDARY_BORDER_TAG = "effect_legendary_border"
+    private const val C_LEGENDARY = 0xFFB04CFF.toInt()
+
+    /** Añade a [container] (la celda del candidato, FrameLayout con fondo redondeado) un borde
+     *  morado que late en bucle, con un tinte morado muy suave detras. Se coloca en el indice 0
+     *  (DETRAS del sprite) para no taparlo, y deja de animar solo en cuanto sale de la ventana
+     *  (mismo patron que sparkleLoop). [cornerPx] = radio de las esquinas de la celda, [strokePx]
+     *  = grosor del borde. */
+    fun addLegendaryBorder(context: Context, container: FrameLayout, cornerPx: Float, strokePx: Int) {
+        val border = View(context).apply {
+            tag = LEGENDARY_BORDER_TAG
+            background = GradientDrawable().apply {
+                setColor((0x38 shl 24) or (C_LEGENDARY and 0xFFFFFF))
+                setStroke(strokePx, C_LEGENDARY)
+                cornerRadius = cornerPx
+            }
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            alpha = 0.55f
+        }
+        container.addView(border, 0)
+        border.post { legendaryPulse(border, true) }
+    }
+
+    private fun legendaryPulse(border: View, up: Boolean) {
+        if (!border.isAttachedToWindow) return
+        border.animate().alpha(if (up) 1f else 0.45f).setDuration(1100)
+            .withEndAction { legendaryPulse(border, !up) }
+            .start()
     }
 
     /** Quita todas las estrellitas que [playShinySparkles] haya añadido a [container] - sin esto

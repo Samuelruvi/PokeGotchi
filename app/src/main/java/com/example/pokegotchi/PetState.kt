@@ -1447,7 +1447,11 @@ object PetState {
     // eso". Con 24h (2x12) se mantiene la MISMA proporcion 2x que ya estaba validada.
     private const val OFFER_GRACE_HOURS = 24f      // limite del ciclo: pasado esto sin abrir, se pierde el turno del siguiente regalo (el doble del intervalo, misma proporcion de siempre)
 
-    data class OfferMon(val name: String, val id: Int)
+    /** [shiny]: este candidato del regalo es la version shiny (sorteado al generar la oferta, ver
+     *  maybeGenerateOffer, y guardado con ella: lo que se ve en el dialogo es lo que se obtiene).
+     *  En el CSV de KEY_OFFER_SPECIES va como tercer campo opcional "nombre:id:s" - las ofertas
+     *  ya guardadas por versiones anteriores ("nombre:id") se leen como no-shiny. */
+    data class OfferMon(val name: String, val id: Int, val shiny: Boolean = false)
 
     // Peso de sorteo: los legendarios/miticos pesan MUCHO menos que el resto, para que salgan
     // pero raramente (con ~88 formas base legendarias/miticas de 541 totales, sin ponderar
@@ -1527,8 +1531,10 @@ object PetState {
             .filter { (name, entry) -> entry.evolvesFrom == null && !isUnlocked(context, name) }
             .map { (name, entry) -> OfferMon(name, entry.id) to (if (entry.rare) WEIGHT_RARE else WEIGHT_NORMAL) }
         if (candidates.isEmpty()) return false   // ya se tiene absolutamente todo
+        // Cada candidato tira SU shiny por separado (misma probabilidad que un huevo, ver rollShiny).
         val picked = weightedSampleWithoutReplacement(candidates, 5)
-        val csv = picked.joinToString(",") { "${it.name}:${it.id}" }
+            .map { it.copy(shiny = rollShiny(context, it.name)) }
+        val csv = encodeOffer(picked)
         // OJO: KEY_OFFER_LAST NO se toca aqui - sigue anclado al inicio del ciclo (fijado en
         // resolveOffer/dismissOffer/markStarterChosen), no al momento en que el regalo aparece.
         p.edit().putString(KEY_OFFER_SPECIES, csv).commit()
@@ -1552,13 +1558,39 @@ object PetState {
 
     /** La oferta pendiente ahora mismo (vacia si no hay ninguna). */
     fun currentOffer(context: Context): List<OfferMon> {
-        val csv = prefs(context).getString(KEY_OFFER_SPECIES, "") ?: ""
+        return decodeOffer(prefs(context).getString(KEY_OFFER_SPECIES, "") ?: "")
+    }
+
+    private fun encodeOffer(offer: List<OfferMon>): String =
+        offer.joinToString(",") { "${it.name}:${it.id}" + if (it.shiny) ":s" else "" }
+
+    private fun decodeOffer(csv: String): List<OfferMon> {
         if (csv.isEmpty()) return emptyList()
         return csv.split(",").mapNotNull { entry ->
             val parts = entry.split(":")
             val id = parts.getOrNull(1)?.toIntOrNull()
-            if (parts.isNotEmpty() && id != null) OfferMon(parts[0], id) else null
+            if (parts.isNotEmpty() && id != null) OfferMon(parts[0], id, parts.getOrNull(2) == "s") else null
         }
+    }
+
+    /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_OFFER_SHINY_CHECK): comprueba, SIN
+     *  tocar la partida, que el formato guardado del regalo conserva el shiny (y que una oferta
+     *  vieja sin ese campo se sigue leyendo) y que la tirada de shiny del regalo sale con la
+     *  misma frecuencia que la del huevo. Devuelve el informe. */
+    fun debugOfferShinySelfTest(context: Context, trials: Int = 200_000): String {
+        val sb = StringBuilder()
+        val sample = listOf(OfferMon("pikachu", 25, true), OfferMon("eevee", 133), OfferMon("mew", 151, true))
+        val back = decodeOffer(encodeOffer(sample))
+        sb.append("ida y vuelta del CSV: ${encodeOffer(sample)} -> ${if (back == sample) "OK" else "FALLO $back"}" + System.lineSeparator())
+        val legacy = decodeOffer("pikachu:25,eevee:133")
+        sb.append("oferta vieja sin campo shiny: ${if (legacy == listOf(OfferMon("pikachu", 25), OfferMon("eevee", 133))) "OK" else "FALLO $legacy"}" + System.lineSeparator())
+        for (name in listOf("pikachu", "bulbasaur", "gastly")) {
+            val expected = EGG_SHINY_CHANCE * bgMatchMultiplier(context, name)
+            var hits = 0
+            repeat(trials) { if (rollShiny(context, name)) hits++ }
+            sb.append("tirada shiny $name (fondo ${currentBg(context)}): esperado ${"%.4f".format(expected)}, observado ${"%.4f".format(hits.toDouble() / trials)} en $trials" + System.lineSeparator())
+        }
+        return sb.toString().trimEnd()
     }
 
     /** Momento en que aparecio la oferta ACTUAL (ancla de ciclo + 12h) - usado por
@@ -1580,11 +1612,12 @@ object PetState {
      *  este apareciera, se abra al momento o con retraso (dentro del plazo de gracia) - si
      *  tardaste 2h en abrirlo, el timer del siguiente ya empieza mostrando 10h en vez de 12h
      *  completas. */
-    fun resolveOffer(context: Context, name: String) {
+    fun resolveOffer(context: Context, name: String, shiny: Boolean = false) {
         val n = name.lowercase()
         unlock(context, n)
         val id = loadEvoTable(context)[n]?.id
-        if (id != null) rollFreshIndividual(context, n, false, id)
+        // [shiny] = el candidato elegido era shiny (ver OfferMon): se crea el individuo shiny.
+        if (id != null) rollFreshIndividual(context, n, shiny, id)
         val anchor = offerAppearedAt(context)
         prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor)
             .putBoolean(KEY_OFFER_EVER_RESOLVED, true).commit()
@@ -1740,6 +1773,14 @@ object PetState {
     // hay un tramo x4 ("boost doble") para nadie - ver bgMatchMultiplier, decision consciente al
     // perder la doble cobertura de tipo por fondo con la ronda de "un fondo por tipo".
     private const val EGG_SHINY_CHANCE = 0.02f
+
+    /** Tirada de shiny COMPARTIDA por el huevo (maybeLayEgg) y el regalo (maybeGenerateOffer) -
+     *  pedido explicito del usuario: "que en el regalo tambien te pueda salir shiny con la misma
+     *  probabilidad que el pokemon". Una sola funcion para que la probabilidad sea la misma por
+     *  construccion: EGG_SHINY_CHANCE, x2 si el fondo puesto ahora le pega al tipo de [name] (ver
+     *  bgMatchMultiplier). */
+    private fun rollShiny(context: Context, name: String): Boolean =
+        Random.nextFloat() < EGG_SHINY_CHANCE * bgMatchMultiplier(context, name)
     const val EGG_CRACK_STAGES = 4          // fases visuales de rotura antes de "listo"
 
     // Bono de xp para el PADRE (no la cria) al eclosionar de verdad el huevo - pedido explicito
@@ -1908,13 +1949,12 @@ object PetState {
         // Charmander->Charizard): ahora un fondo de ese tipo ganado SI cuenta, aunque la cria (forma
         // base) no lo tenga todavia.
         val babySpecies = baseFormOf(context, name)
-        val shinyChance = EGG_SHINY_CHANCE * bgMatchMultiplier(context, name)
         val e = prefs(context).edit()
             .putBoolean(KEY_EGG_ACTIVE, true)
             .putString(KEY_EGG_PARENT, name)
             .putBoolean(KEY_EGG_PARENT_SHINY, isActiveShiny(context))
             .putLong(KEY_EGG_LAID_AT, System.currentTimeMillis())
-            .putBoolean(KEY_EGG_SHINY, Random.nextFloat() < shinyChance)
+            .putBoolean(KEY_EGG_SHINY, rollShiny(context, name))
             .putBoolean(KEY_EGG_READY, false)
             .putInt(KEY_EGG_STAGE, 0)
             .remove(KEY_EGG_LAST_PULSE)

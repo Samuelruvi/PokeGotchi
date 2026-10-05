@@ -571,15 +571,16 @@ class TrainerSetupActivity : AppCompatActivity() {
             runOnUiThread {
                 for (mon in offerPreviewSpecies) {
                     val cellFrame = cellFrames[mon] ?: continue
-                    val cellW = cellFrame.layoutParams.width; val cellH = cellFrame.layoutParams.height
                     cellFrame.addView(ImageView(this).apply {
                         layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                         scaleType = ImageView.ScaleType.FIT_CENTER
                         setPadding(dp(4), dp(4), dp(4), dp(4))
                         setImageBitmap(bmps[mon])
                     })
+                    // Legendario/mitico: borde morado que late (las estrellitas son del shiny) - ver
+                    // EffectGenerator.addLegendaryBorder.
                     if (PetState.evolutionInfo(this, mon)?.rare == true) {
-                        EffectGenerator.playShinySparkles(this, cellFrame, cellW, cellH)
+                        EffectGenerator.addLegendaryBorder(this, cellFrame, dp(12).toFloat(), dp(3))
                     }
                 }
             }

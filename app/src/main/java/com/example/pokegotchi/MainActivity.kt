@@ -190,9 +190,30 @@ class MainActivity : AppCompatActivity() {
         // siempre va seguido de onResume, y hacerlo en los dos lo arrancaba dos veces seguidas.
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)   // para que onResume vea los extras de depuracion (ver debugDemoOffer)
+    }
+
+    /** SOLO PARA PRUEBAS: lista de ejemplo para ver como se pintan los distintivos del regalo -
+     *  normal, legendario (borde morado), shiny, legendario+shiny, normal. Se abre con
+     *  adb shell am start -n com.example.pokegotchi/.MainActivity --ez debug_offer_preview true
+     *  y es solo una VISTA PREVIA: no toca la oferta real ni el ciclo de regalos (ver showOfferDialog). */
+    private fun debugDemoOffer() = listOf(
+        PetState.OfferMon("pikachu", 25),
+        PetState.OfferMon("mewtwo", 150),
+        PetState.OfferMon("eevee", 133, shiny = true),
+        PetState.OfferMon("rayquaza", 384, shiny = true),
+        PetState.OfferMon("gengar", 94)
+    )
+
     override fun onResume() {
         super.onResume()
         if (!PetState.hasChosenStarter(this)) return   // aun redirigiendo a StarterActivity
+        if (intent?.getBooleanExtra("debug_offer_preview", false) == true) {
+            intent.removeExtra("debug_offer_preview")
+            window.decorView.post { showOfferDialog(debugDemoOffer()) }
+        }
         // Retoma el avance de fondo de la mazmorra (o la espera del cooldown). Aqui y no en
         // onCreate: tocar el aviso "mazmorra parada" del widget con la app ya en recientes la
         // trae al frente SIN pasar por onCreate, y el servicio tiene que reanudarse igualmente.
@@ -638,9 +659,14 @@ class MainActivity : AppCompatActivity() {
      * ANIMADOS y SIN nombre - tocar el sprite directamente lo elige y lo añade a la Pokedex
      * (sin tocar al Pokemon activo). Tambien se puede descartar la oferta entera si no gusta
      * ninguno (para que aparezcan otros mas adelante en vez de quedar atascada).
+     * Distintivos: shiny = su sprite shiny + estrellitas ✨ + una ✨ en la esquina; legendario/
+     * mitico = borde morado que late (las estrellitas NO se comparten - pedido del usuario).
+     * [previewOffer] != null = VISTA PREVIA (solo para ver el aspecto, ver debugDemoOffer): usa esa
+     * lista en vez de la oferta real y no guarda, elige ni descarta nada.
      */
-    private fun showOfferDialog() {
-        val offer = PetState.currentOffer(this)
+    private fun showOfferDialog(previewOffer: List<PetState.OfferMon>? = null) {
+        val preview = previewOffer != null
+        val offer = previewOffer ?: PetState.currentOffer(this)
         if (offer.isEmpty()) return
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
@@ -659,7 +685,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(20), dp(20), dp(16))
         }
         content.addView(TextView(this).apply {
-            text = "🎁 Toca uno para añadirlo a tu Pokédex"
+            text = if (preview) "🎁 Vista previa (no se guarda nada)" else "🎁 Toca uno para añadirlo a tu Pokédex"
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.WHITE)
@@ -683,10 +709,12 @@ class MainActivity : AppCompatActivity() {
             }
             for (mon in rowMons) {
                 val cellW = dp(92); val cellH = dp(84)
-                // Legendario/mitico (ver PetState.OfferMon/evolutionInfo.rare): mismo aviso
-                // visual que un shiny al eclosionar (playShinySparkles), para que destaque solo
-                // sobre el resto de la oferta - pedido explicito del usuario.
+                // Legendario/mitico (ver PetState.OfferMon/evolutionInfo.rare): borde morado que
+                // late (EffectGenerator.addLegendaryBorder) para que destaque sobre el resto de la
+                // oferta - pedido explicito del usuario; antes compartia las estrellitas del shiny.
                 val isRare = PetState.evolutionInfo(this@MainActivity, mon.name)?.rare == true
+                // Shiny sorteado al generar el regalo (ver PetState.OfferMon.shiny): se muestra su
+                // sprite shiny, con las estrellitas (ahora SOLO de el) y una ✨ para que se note.
                 val cellFrame = android.widget.FrameLayout(this).apply {
                     layoutParams = LinearLayout.LayoutParams(cellW, cellH).apply {
                         setMargins(dp(5), dp(5), dp(5), dp(5))
@@ -705,26 +733,39 @@ class MainActivity : AppCompatActivity() {
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setPadding(dp(4), dp(4), dp(4), dp(4))
                 }
-                loadAnimatedSprite(cell, mon.name)
+                loadAnimatedSprite(cell, mon.name, mon.shiny)
                 cellFrame.addView(cell)
-                if (isRare) EffectGenerator.playShinySparkles(this, cellFrame, cellW, cellH)
+                if (isRare) EffectGenerator.addLegendaryBorder(this, cellFrame, dp(12).toFloat(), dp(3))
+                if (mon.shiny) cellFrame.addView(TextView(this).apply {
+                    text = "✨"
+                    textSize = 14f
+                    layoutParams = android.widget.FrameLayout.LayoutParams(
+                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { gravity = Gravity.TOP or Gravity.END; setMargins(0, dp(2), dp(4), 0) }
+                })
+                if (mon.shiny) EffectGenerator.playShinySparkles(this, cellFrame, cellW, cellH)
                 // Confirmacion antes de elegir (pedido explicito del usuario tras descartar un
                 // regalo entero sin querer con un toque perdido: "en el regalo puedes poner una
                 // confirmacion de descartar y de confirmacion del pokemon?") - elegir tambien es
                 // irreversible (el resto de la oferta se pierde), asi que merece el mismo aviso.
                 cellFrame.setOnClickListener {
+                    if (preview) {
+                        Toast.makeText(this@MainActivity, "Vista previa: no se añade nada", Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    val monLabel = PetState.displayLabel(mon.name) + if (mon.shiny) " ✨ shiny" else ""
                     androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
-                        .setTitle(PetState.displayLabel(mon.name))
-                        .setMessage("¿Seguro que quieres elegir a ${PetState.displayLabel(mon.name)}? Se añadirá a tu Pokédex y el resto de la oferta se perderá.")
+                        .setTitle(monLabel)
+                        .setMessage("¿Seguro que quieres elegir a $monLabel? Se añadirá a tu Pokédex y el resto de la oferta se perderá.")
                         .setPositiveButton("Elegir") { _, _ ->
-                            dbg("regalo: elegido ${mon.name} de entre ${offer.joinToString(",") { it.name }}")
-                            PetState.resolveOffer(this@MainActivity, mon.name)
+                            dbg("regalo: elegido ${mon.name}${if (mon.shiny) " (SHINY)" else ""} de entre ${offer.joinToString(",") { it.name + if (it.shiny) "(shiny)" else "" }}")
+                            PetState.resolveOffer(this@MainActivity, mon.name, mon.shiny)
                             NotificationHelper.cancelOfferReady(this@MainActivity)
                             dialog.dismiss()
                             refreshOfferBadge()
                             refreshRows()
                             adapter.notifyDataSetChanged()
-                            Toast.makeText(this@MainActivity, "¡${PetState.displayLabel(mon.name)} añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "¡$monLabel añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
                         }
                         .setNegativeButton("Cancelar", null)
                         .show()
@@ -749,6 +790,7 @@ class MainActivity : AppCompatActivity() {
         frame.addView(content)
         dialog = androidx.appcompat.app.AlertDialog.Builder(this).setView(frame).create()
         btnDismiss.setOnClickListener {
+            if (preview) { dialog.dismiss(); return@setOnClickListener }
             // Confirmacion antes de descartar (pedido explicito del usuario, ver comentario de
             // arriba) - antes un solo toque perdido tiraba la oferta entera sin forma de deshacerlo.
             androidx.appcompat.app.AlertDialog.Builder(this)
@@ -766,6 +808,17 @@ class MainActivity : AppCompatActivity() {
         }
         btnLater.setOnClickListener { dialog.dismiss() }
         dialog.show()
+        // Vista previa: vuelca SOLO la vista del propio dialogo a PNG (sin capturar la pantalla del
+        // movil) cuando ya han cargado los sprites - la forma de comprobar el aspecto desde adb.
+        if (preview) frame.postDelayed({
+            try {
+                val bmp = android.graphics.Bitmap.createBitmap(frame.width, frame.height, android.graphics.Bitmap.Config.ARGB_8888)
+                frame.draw(android.graphics.Canvas(bmp))
+                java.io.File(filesDir, "debug_offer_preview.png").outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                bmp.recycle()
+                dbg("regalo: vista previa volcada a debug_offer_preview.png")
+            } catch (e: Exception) { dbg("regalo: volcado de la vista previa fallo: $e") }
+        }, 3500)
     }
 
     /**

@@ -127,6 +127,11 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW --ef xp 10
         const val ACTION_DEBUG_DUMP_XP_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW"
 
+        // SOLO PARA PRUEBAS: comprueba (sin tocar la partida) que el regalo guarda/lee el shiny y que
+        // su tirada sale con la misma frecuencia que la del huevo (ver
+        // PetState.debugOfferShinySelfTest). El informe queda en el log ("regalo shiny").
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_OFFER_SHINY_CHECK
+        const val ACTION_DEBUG_OFFER_SHINY_CHECK = "com.example.pokegotchi.ACTION_DEBUG_OFFER_SHINY_CHECK"
         // SOLO PARA PRUEBAS: repite la animacion REAL de una accion con el "+N XP" bajo el nivel SIN
         // tocar ninguna estadistica ni la XP (ni gasta la necesidad del Pokemon): suena y se ve como
         // el original, pero no cuenta. Extras opcionales: "kind" (feed|pet|wash, feed por defecto)
@@ -484,6 +489,9 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     PetState.repairMechanicFormsSeen(context, name, keep)
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
                 }
+            }
+            ACTION_DEBUG_OFFER_SHINY_CHECK -> {
+                DebugLog.log(context, "regalo shiny - autocomprobacion: " + PetState.debugOfferShinySelfTest(context))
             }
             ACTION_DEBUG_XP_REPLAY -> {
                 val kind = intent.getStringExtra("kind") ?: "feed"
