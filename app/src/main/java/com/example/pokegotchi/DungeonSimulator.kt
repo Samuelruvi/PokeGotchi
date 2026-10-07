@@ -1596,10 +1596,28 @@ object DungeonSimulator {
     // porque cada hilo cargo su propia copia de RunState antes de que el otro terminara). Con el
     // lock, el segundo runTick que llegue simplemente espera a que el primero termine y persista
     // antes de cargar su propio RunState - nunca se pisan.
+    /** Un ciclo de la mazmorra (DungeonService.TICK_INTERVAL_MS) en horas - lo que suma al tiempo
+     *  "cuidandolo" del explorador por cada ciclo que pasa EN la mazmorra. */
+    private const val CARE_HOURS_PER_TICK = DungeonService.TICK_INTERVAL_MS / 3_600_000f
+
+    /** Pedido explicito del usuario: "si el Pokemon esta en la mazmorra tambien suba el timer
+     *  cuidandolo, porque en parte esta activo tambien". Cada ciclo EXPLORANDO suma su duracion al
+     *  tiempo de cuidado ("⏱️ ... cuidandolo") del explorador. Se cuenta por CICLOS simulados, no
+     *  por reloj real, igual que sus recompensas: el servicio lo llama en cada ciclo (runTick, y
+     *  la vista en vivo aparte) y la puesta al dia de un paron lo repite por cada ciclo perdido.
+     *  El Pokemon activo del widget ya suma por su cuenta (ver PetState.addCareHours: no cuenta
+     *  dos veces), y el cooldown (nadie explorando) no suma. */
+    fun accrueCareTick(context: Context) {
+        if (!DungeonState.isExploring(context)) return
+        val species = DungeonState.currentSpecies(context) ?: return
+        PetState.addCareHours(context, species, DungeonState.currentShiny(context), CARE_HOURS_PER_TICK)
+    }
+
     fun runTick(context: Context) = synchronized(this) {
         val species = DungeonState.currentSpecies(context) ?: return@synchronized
         val shiny = DungeonState.currentShiny(context)
         val run = loadRunState(context) ?: return@synchronized
+        accrueCareTick(context)
         val steps = Random.nextInt(TILE_MOVES_MIN, TILE_MOVES_MAX_EXCLUSIVE)
         for (i in 0 until steps) {
             val result = stepOnce(context, species, shiny, run)

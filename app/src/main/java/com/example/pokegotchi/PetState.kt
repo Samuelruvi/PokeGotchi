@@ -641,6 +641,55 @@ object PetState {
     fun careHours(context: Context, name: String, shiny: Boolean = false): Float =
         prefs(context).getFloat(k(slot(name.lowercase(), shiny), KEY_CARE_HOURS), 0f)
 
+    /** Suma [hours] al tiempo de cuidado del individuo [name]/[shiny] cuando pasa FUERA del widget
+     *  (hoy: explorando la mazmorra, ver DungeonSimulator.accrueCareTick) - pedido explicito del
+     *  usuario: "si el Pokemon esta en la mazmorra tambien suba el timer cuidandolo". No hace nada
+     *  si ese individuo no existe (o ya evoluciono: el tiempo se migro a la forma nueva, no hay que
+     *  crear una clave suelta) ni si es el ACTIVO del widget, que ya suma las mismas horas reales
+     *  en loadWithDecay (contarlo aqui tambien lo duplicaria). */
+    fun addCareHours(context: Context, name: String, shiny: Boolean, hours: Float) {
+        if (hours <= 0f) return
+        synchronized(statsWriteLock) {
+            val base = name.lowercase()
+            val p = prefs(context)
+            val n = slot(base, shiny)
+            if (!p.contains(k(n, KEY_XP)) || hasEvolvedAway(context, base, shiny)) return
+            if (currentPokemon(context) == base && isActiveShiny(context) == shiny) return
+            p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloat(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
+        }
+    }
+
+    /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_CARE_CHECK): comprueba addCareHours
+     *  con individuos reales y deja el tiempo de cuidado EXACTAMENTE como estaba. Devuelve el
+     *  informe. */
+    fun debugCareHoursSelfTest(context: Context): String {
+        val p = prefs(context)
+        val sb = StringBuilder()
+        val activeName = currentPokemon(context); val activeShiny = isActiveShiny(context)
+        // el activo del widget: NO debe cambiar (ya suma por su cuenta en loadWithDecay)
+        run {
+            val key = k(slot(activeName, activeShiny), KEY_CARE_HOURS)
+            val before = p.getFloat(key, 0f)
+            addCareHours(context, activeName, activeShiny, 1f)
+            val after = p.getFloat(key, 0f)
+            sb.append("activo $activeName(shiny=$activeShiny): $before -> $after ${if (before == after) "OK (no se duplica)" else "FALLO"}" + System.lineSeparator())
+        }
+        // un individuo NO activo (el explorador de la mazmorra si hay, si no el primero que exista)
+        val candidates = listOfNotNull(DungeonState.currentSpecies(context)?.let { it to DungeonState.currentShiny(context) }) +
+            ownedIndividuals(context)
+        val other = candidates.firstOrNull { (n, s) -> !(n == activeName && s == activeShiny) && hasIndividual(context, n, s) && !hasEvolvedAway(context, n, s) }
+        if (other == null) { sb.append("no hay otro individuo para probar"); return sb.toString() }
+        val key = k(slot(other.first, other.second), KEY_CARE_HOURS)
+        val had = p.contains(key)
+        val before = p.getFloat(key, 0f)
+        addCareHours(context, other.first, other.second, 1f / 60f)
+        val after = p.getFloat(key, 0f)
+        sb.append("no activo ${other.first}(shiny=${other.second}): $before -> $after ${if (Math.abs((after - before) - 1f / 60f) < 1e-5f) "OK (+1 min)" else "FALLO"}" + System.lineSeparator())
+        if (had) p.edit().putFloat(key, before).commit() else p.edit().remove(key).commit()
+        sb.append("restaurado: ${p.getFloat(key, 0f) == before}")
+        return sb.toString()
+    }
+
     fun rawStats(context: Context, name: String, shiny: Boolean = false): Stats? {
         val n = slot(name.lowercase(), shiny)
         val p = prefs(context)

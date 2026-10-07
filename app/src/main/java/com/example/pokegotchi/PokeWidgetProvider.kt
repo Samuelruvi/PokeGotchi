@@ -127,6 +127,10 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW --ef xp 10
         const val ACTION_DEBUG_DUMP_XP_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW"
 
+        // SOLO PARA PRUEBAS: comprueba PetState.addCareHours (tiempo de cuidado de un Pokemon en la
+        // mazmorra) con individuos reales y lo deja todo como estaba. Informe en el log ("cuidado").
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_CARE_CHECK
+        const val ACTION_DEBUG_CARE_CHECK = "com.example.pokegotchi.ACTION_DEBUG_CARE_CHECK"
         // SOLO PARA PRUEBAS: comprueba (sin tocar la partida) que el regalo guarda/lee el shiny y que
         // su tirada sale con la misma frecuencia que la del huevo (ver
         // PetState.debugOfferShinySelfTest). El informe queda en el log ("regalo shiny").
@@ -489,6 +493,9 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     PetState.repairMechanicFormsSeen(context, name, keep)
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
                 }
+            }
+            ACTION_DEBUG_CARE_CHECK -> {
+                DebugLog.log(context, "cuidado - autocomprobacion: " + PetState.debugCareHoursSelfTest(context))
             }
             ACTION_DEBUG_OFFER_SHINY_CHECK -> {
                 DebugLog.log(context, "regalo shiny - autocomprobacion: " + PetState.debugOfferShinySelfTest(context))

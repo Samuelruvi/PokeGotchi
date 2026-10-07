@@ -28,7 +28,7 @@ import androidx.core.content.ContextCompat
  */
 class DungeonService : Service() {
     companion object {
-        private const val TICK_INTERVAL_MS = 60_000L
+        const val TICK_INTERVAL_MS = 60_000L   // publico: DungeonSimulator.accrueCareTick suma exactamente un ciclo de esto
         @Volatile private var liveViewActive = false
 
         /** true mientras exista la instancia del servicio EN ESTE PROCESO. Es la señal fiable de
@@ -87,6 +87,11 @@ class DungeonService : Service() {
                 else -> if (!liveViewActive) {
                     DungeonSimulator.runTick(this@DungeonService)
                     NotificationHelper.refreshDungeonNotification(this@DungeonService)
+                } else {
+                    // Con la vista en vivo abierta no se llama a runTick (la vista hace sus propios
+                    // pasos), pero el Pokemon SIGUE en la mazmorra: el ciclo cuenta igual para su
+                    // tiempo de cuidado (ver DungeonSimulator.accrueCareTick).
+                    DungeonSimulator.accrueCareTick(this@DungeonService)
                 }
             }
             handler.postDelayed(this, TICK_INTERVAL_MS)
