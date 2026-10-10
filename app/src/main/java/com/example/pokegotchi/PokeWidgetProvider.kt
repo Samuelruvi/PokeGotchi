@@ -127,6 +127,12 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW --ef xp 10
         const val ACTION_DEBUG_DUMP_XP_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW"
 
+        // SOLO PARA PRUEBAS: lista que archivo de grito usaria cada especie (tamaño/huella, y si
+        // SoundPool lo carga) y hace sonar UNA vez el grito del Pokemon activo. Informe en el log
+        // ("gritos"). Extra opcional "names" (lista separada por comas).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_CRY_CHECK --es names pikachu,absol,luxio
+        const val ACTION_DEBUG_CRY_CHECK = "com.example.pokegotchi.ACTION_DEBUG_CRY_CHECK"
         // SOLO PARA PRUEBAS: comprueba PetState.addCareHours (tiempo de cuidado de un Pokemon en la
         // mazmorra) con individuos reales y lo deja todo como estaba. Informe en el log ("cuidado").
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_CARE_CHECK
@@ -494,6 +500,18 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
                 }
             }
+            ACTION_DEBUG_CRY_CHECK -> {
+                val names = (intent.getStringExtra("names") ?: "pikachu,absol,luxio,mewtwo,gengar,onix")
+                    .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                val pending = goAsync()
+                Thread {
+                    try {
+                        DebugLog.log(context, "gritos - activo=${PetState.currentPokemon(context)}:" + System.lineSeparator() + SoundManager.debugCryReport(context, names))
+                        SoundManager.playCry(context)
+                        Thread.sleep(2500)
+                    } finally { pending.finish() }
+                }.start()
+            }
             ACTION_DEBUG_CARE_CHECK -> {
                 DebugLog.log(context, "cuidado - autocomprobacion: " + PetState.debugCareHoursSelfTest(context))
             }
@@ -846,6 +864,7 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // el hilo llegue a arrancar, se libera el cerrojo aqui mismo para no quedar bloqueado
         // para siempre (el hilo, si SI llega a arrancar, ya libera el suyo en su propio finally).
         reactionRunning = true
+        SoundManager.preload(context)   // el grito del Pokemon (suena mas tarde, en su fotograma) ya cargado
         dbg(context, "playReactionOnce($kind) empieza, reactionRunning=true")
         try {
             PetState.setReaction(context, kind, fx.frames * fx.interval + 4000L)

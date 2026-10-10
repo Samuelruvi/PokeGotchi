@@ -62,6 +62,11 @@ object CryRepository {
         return if (hasBase) copyLocal(context, basePath, base) else null
     }
 
+    /** Solo el paquete LOCAL (nada de red): el grito de [name] si esta en assets/cries (o el de su
+     *  forma base regional), null si no. Para quien necesita saber ya, sin descargar nada, si hay
+     *  un grito propio - ver SoundManager.withActiveCry. Seguro en cualquier hilo de fondo. */
+    fun local(context: Context, name: String): File? = tryLocal(context, name)
+
     private fun networkFile(context: Context, id: Int) = File(context.filesDir, "cries/$id.ogg")
 
     /** Devuelve el archivo del cry de [name] (pokedex id [id] solo para el fallback de red) -
