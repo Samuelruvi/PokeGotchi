@@ -823,6 +823,9 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     val bgRes = context.resources.getIdentifier(PetState.currentBg(context), "drawable", context.packageName)
                     val poke = activeSpriteName(context)
                     val styleKey = PetState.currentStyleKey(context)
+                    // Sin widget colocado (cuenta secundaria) nadie ha generado todavia los fotogramas: se generan aqui (solo para este volcado).
+                    if (!SpriteRepository.isCurrent(SpriteRepository.readMeta(context, styleKey, poke)))
+                        SpriteRepository.ensure(context, poke, PetState.currentPokemonId(context), PetState.currentStyle(context), PetState.isShiny(context), PetState.spriteScaleMode(context))
                     val sprite = BitmapFactory.decodeFile(SpriteRepository.frameFile(context, styleKey, poke, 0).absolutePath)
                     var n = 0
                     for (ph in floatArrayOf(-0.2f, 0.02f, 0.3f, 0.6f, 0.78f, 0.9f, 1.1f)) {
