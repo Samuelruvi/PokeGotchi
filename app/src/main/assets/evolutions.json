@@ -649,7 +649,7 @@
       {
         "id": 979,
         "name": "annihilape",
-        "level": 24,
+        "level": 29,
         "method": "use-move"
       }
     ],
@@ -948,7 +948,7 @@
       {
         "id": 462,
         "name": "magnezone",
-        "level": 25,
+        "level": 31,
         "method": "location"
       }
     ],
@@ -1288,7 +1288,7 @@
       {
         "id": 464,
         "name": "rhyperior",
-        "level": 32,
+        "level": 43,
         "method": "trade"
       }
     ],
@@ -2448,7 +2448,7 @@
       {
         "id": 901,
         "name": "ursaluna",
-        "level": 25,
+        "level": 31,
         "method": "item-peat-block"
       }
     ],
@@ -2497,7 +2497,7 @@
       {
         "id": 473,
         "name": "mamoswine",
-        "level": 28,
+        "level": 34,
         "method": "known-move"
       }
     ],
@@ -3339,7 +3339,7 @@
       {
         "id": 183,
         "name": "marill",
-        "level": 25,
+        "level": 17,
         "method": "friendship"
       }
     ],
@@ -3920,7 +3920,7 @@
       {
         "id": 477,
         "name": "dusknoir",
-        "level": 32,
+        "level": 38,
         "method": "trade"
       }
     ],
@@ -6441,7 +6441,7 @@
       {
         "id": 604,
         "name": "eelektross",
-        "level": 25,
+        "level": 40,
         "method": "item-thunder-stone"
       }
     ],
@@ -6497,7 +6497,7 @@
       {
         "id": 609,
         "name": "chandelure",
-        "level": 25,
+        "level": 42,
         "method": "item-dusk-stone"
       }
     ],
@@ -6672,7 +6672,7 @@
       {
         "id": 983,
         "name": "kingambit",
-        "level": 24,
+        "level": 53,
         "method": "three-defeated-bisharp"
       }
     ],
@@ -7231,7 +7231,7 @@
       {
         "id": 681,
         "name": "aegislash",
-        "level": 25,
+        "level": 36,
         "method": "item-dusk-stone"
       }
     ],
@@ -8861,7 +8861,7 @@
       {
         "id": 1011,
         "name": "dipplin",
-        "level": 27,
+        "level": 25,
         "method": "item-syrupy-apple"
       }
     ],
@@ -10468,7 +10468,7 @@
       {
         "id": 1019,
         "name": "hydrapple",
-        "level": 28,
+        "level": 36,
         "method": "known-move"
       }
     ],

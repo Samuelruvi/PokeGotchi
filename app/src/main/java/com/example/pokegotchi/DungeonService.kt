@@ -50,9 +50,12 @@ class DungeonService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    // true mientras haya un ciclo programado en el Handler (solo se toca desde el hilo principal).
+    private var tickPending = false
 
     private val tickRunnable = object : Runnable {
         override fun run() {
+            tickPending = false
             // COOLDOWN (pedido explicito del usuario: "el reintento... debe tener un cooldown que
             // dependera de la cantidad de pisos") NUNCA se salta por liveViewActive - a diferencia
             // de runTick (que si podria chocar con la vista en vivo simulando el mismo RunState),
@@ -94,8 +97,19 @@ class DungeonService : Service() {
                     DungeonSimulator.accrueCareTick(this@DungeonService)
                 }
             }
-            handler.postDelayed(this, TICK_INTERVAL_MS)
+            tickPending = true
+            handler.postDelayed(this, nextTickDelayMs())
         }
+    }
+
+    /** Normalmente un ciclo (60 s). Con la mazmorra cerrada (cooldown) el siguiente ciclo se
+     *  adelanta para caer justo al vencer el cierre - antes se resolvia en el ciclo que tocara,
+     *  hasta 60 s DESPUES de que el temporizador llegara a cero ("el timer ha llegado a cero pero
+     *  la mazmorra no ha empezado"). */
+    private fun nextTickDelayMs(): Long {
+        if (!DungeonState.isInCooldown(this)) return TICK_INTERVAL_MS
+        val untilExpiry = DungeonState.cooldownUntil(this) - System.currentTimeMillis() + 500L
+        return untilExpiry.coerceIn(1_000L, TICK_INTERVAL_MS)
     }
 
     override fun onCreate() {
@@ -121,9 +135,24 @@ class DungeonService : Service() {
         // fiable de "puede que llevara un rato sin correr" (lo mato el sistema, force-stop,
         // MIUI...), asi que es el sitio correcto para comprobarlo. En un hilo aparte - recuperar
         // muchos ciclos de golpe no debe bloquear onStartCommand (riesgo de ANR).
-        Thread { DungeonSimulator.catchUpIfStalled(applicationContext, TICK_INTERVAL_MS) }.start()
-        handler.removeCallbacks(tickRunnable)
-        handler.postDelayed(tickRunnable, TICK_INTERVAL_MS)
+        Thread {
+            DungeonSimulator.catchUpIfStalled(applicationContext, TICK_INTERVAL_MS)
+            // Un cierre ya vencido se resuelve AHORA (abrir la app, tocar el widget...) en vez de
+            // esperar al siguiente ciclo del Handler: el usuario vio el temporizador a cero con la
+            // mazmorra sin arrancar.
+            if (DungeonState.isInCooldown(applicationContext)) {
+                DungeonSimulator.resolveCooldownIfReady(applicationContext)
+                NotificationHelper.refreshDungeonNotification(applicationContext)
+            }
+        }.start()
+        // Solo programa el ciclo si NO hay ya uno pendiente. Antes se cancelaba y se volvia a
+        // programar a 60 s en CADA arranque: abrir la app, entrar a la mazmorra o tocar el widget
+        // mas de una vez por minuto empujaba el ciclo hacia delante una y otra vez y no llegaba a
+        // ejecutarse (log real: 2,4 min sin ningun ciclo, con el cierre ya vencido).
+        if (!tickPending) {
+            tickPending = true
+            handler.postDelayed(tickRunnable, nextTickDelayMs())
+        }
         return START_STICKY
     }
 
@@ -132,6 +161,7 @@ class DungeonService : Service() {
         isRunning = false
         DebugLog.log(this, "mazmorra: servicio detenido")
         handler.removeCallbacks(tickRunnable)
+        tickPending = false
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

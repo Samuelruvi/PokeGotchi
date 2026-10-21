@@ -79,6 +79,22 @@ class TrainerSetupActivity : AppCompatActivity() {
         action()
     }
 
+    /** Mientras dura una animacion (la Pokebola y la aparicion del Pokemon, la evolucion, el huevo...) "Continuar" se queda
+     *  desactivado: si se pulsaba antes de que acabase, el jugador se perdia la animacion (pedido del usuario, 2026-10-17: "si le das
+     *  al siguiente antes de que aparezca el Pokemon, te lo pierdes"). [Saltar] sigue activo. */
+    private var animLockToken = 0
+    private fun lockContinue(safetyMs: Long = 9000L) {
+        val btn = findViewById<Button>(R.id.btn_continue_narration) ?: return
+        val token = ++animLockToken
+        btn.isEnabled = false; btn.alpha = 0.45f
+        // Por si una animacion falla a medias: nunca se queda bloqueado para siempre.
+        btn.postDelayed({ if (token == animLockToken) unlockContinue() }, safetyMs)
+    }
+    private fun unlockContinue() {
+        animLockToken++
+        findViewById<Button>(R.id.btn_continue_narration)?.apply { isEnabled = true; alpha = 1f }
+    }
+
     private var introIndex = 0
     private val introLines = listOf(
         "¡Hola! Siento haberte hecho esperar. Bienvenido al mundo de PokeGotchi. Yo soy el Profesor Oak.",
@@ -117,33 +133,19 @@ class TrainerSetupActivity : AppCompatActivity() {
         val showDungeonPreview: Boolean = false,
     )
     private var tutorialIndex = -1
+    private var sandbox = false
+    // Tutorial corto: solo lo basico para empezar (cuidados, nivel/evolucion y widget). El resto de mecanicas (mazmorra, companeros,
+    // guarderia, mochila, huevo, regalo, fichas de fondo, megaevolucion y la propia coleccion) se explican con un consejo de primera
+    // vez en cuanto se usa cada una - ver TutorialTips. Los TutorialStep con preview de regalo/mazmorra/huevo/shiny/mega siguen
+    // soportados por showTutorialStep pero ya no se usan aqui.
     private val tutorialLines = listOf(
-        TutorialStep("Ahora que ya nos conocemos, deja que te explique cómo funciona todo esto - será rápido."),
         TutorialStep(
-            "Tu Pokémon necesita que lo cuides: dale de comer, acarícialo y lávalo tocando los botones del widget o de la app - pero solo hace falta cuando él lo pide, no todo el rato.",
+            "Ahora que ya nos conocemos, lo básico: tu Pokémon necesita que lo cuides. Dale de comer, acarícialo y lávalo tocando los botones del widget o de la app - pero solo hace falta cuando él lo pide, no todo el rato.",
             showWidgetPreview = true
         ),
-        TutorialStep("Cuidándolo bien, tu Pokémon gana experiencia y sube de nivel.", showWidgetPreview = true),
-        TutorialStep("Al nivel suficiente, ¡tu Pokémon puede evolucionar!", spriteName = "charizard", transformFrom = "charmander"),
-        TutorialStep("Muy de vez en cuando, un Pokémon nace... shiny. El mismo Pokémon, pero con colores distintos - rarísimo de encontrar.", spriteName = "gyarados", shiny = true),
-        TutorialStep("Algunos Pokémon, a partir de cierto nivel, pueden Megaevolucionar o hacer Gigamax durante un tiempo limitado - una forma temporal aún más poderosa.", spriteName = "absol-mega", transformFrom = "absol"),
-        TutorialStep(
-            "Si tu Pokémon ya evolucionó del todo, de vez en cuando pondrá un huevo. Cuídalo y eclosionará en una cría de su misma familia.",
-            spriteName = "charmander", eggParentName = "charizard"
-        ),
-        TutorialStep(
-            "Cada cierto tiempo tendrás un regalo esperando: podrás elegir uno de varios Pokémon nuevos para tu Pokédex, sin tocar a tu compañero activo.",
-            showOfferPreview = true
-        ),
-        TutorialStep(
-            "Y con el icono 🗺️ de arriba entras a la Mazmorra: manda a cualquiera de tus Pokémon a explorar pisos, luchar y encontrar objetos - sigue avanzando incluso con la app cerrada.",
-            showDungeonPreview = true
-        ),
-        TutorialStep("Al subir de nivel de entrenador ganarás fichas para desbloquear fondos nuevos - algunos incluso ayudan más a ciertos tipos de Pokémon."),
-        TutorialStep("Puedes marcar tus Pokémon favoritos, y elegir uno para que aparezca en tu propia ficha de entrenador - la que se abre tocando tu nivel."),
-        TutorialStep("En la Pokédex tienes tres pestañas: Mis Pokémon, Favoritos, y la Pokédex completa - con buscador y varias formas de ordenar."),
-        TutorialStep("Y no olvides el widget de tu pantalla de inicio: tu Pokémon vive ahí también, siempre a un toque de distancia."),
-        TutorialStep("Creo que ya lo sabes todo. ¡Ahora sí, vamos a elegir tu primer Pokémon!"),
+        TutorialStep("Cuidándolo bien gana experiencia y sube de nivel. Y al nivel suficiente, ¡puede evolucionar!", spriteName = "charizard", transformFrom = "charmander"),
+        TutorialStep("Y no olvides el widget de tu pantalla de inicio: tu Pokémon vive ahí también, siempre a un toque de distancia.", showWidgetPreview = true),
+        TutorialStep("Más adelante irás descubriendo cosas nuevas - la Mazmorra, la Guardería, los huevos... - y te las iré explicando justo cuando las necesites. ¡Ahora sí, vamos a elegir tu primer Pokémon!"),
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -160,6 +162,7 @@ class TrainerSetupActivity : AppCompatActivity() {
         }
 
         editMode = intent.getBooleanExtra(EXTRA_EDIT_MODE, false)
+        sandbox = intent.getBooleanExtra(EXTRA_DEBUG_SANDBOX, false)
         if (editMode) {
             selectedSprite = PetState.trainerSprite(this)
             chosenGender = TrainerSprites.genderFor(selectedSprite)
@@ -208,12 +211,40 @@ class TrainerSetupActivity : AppCompatActivity() {
             showTutorialStep()
             findViewById<Button>(R.id.btn_continue_narration).setOnClickListener { debouncedAdvance(::advanceTutorial) }
             showPanel(panelContinue)
+            if (intent.getBooleanExtra(EXTRA_DEBUG_DUMP, false)) {
+                // A los 450 ms la animacion sigue en marcha ("Continuar" debe estar bloqueado en los pasos con animacion) y a los 3 s ya acabo.
+                for (ms in listOf(450L, 3000L)) window.decorView.postDelayed({
+                    val enabled = findViewById<Button>(R.id.btn_continue_narration)?.isEnabled
+                    DebugLog.log(this, "tutorial: paso $debugPreviewStep, a los $ms ms, Continuar habilitado=$enabled")
+                    debugDumpOwnView(if (ms < 1000L) "debug_tutorial_${debugPreviewStep}_early.png" else "debug_tutorial_$debugPreviewStep.png")
+                }, ms)
+            }
         } else if (editMode) {
             showGenderPanel()
         } else {
             oakText.text = introLines[0]
             showPanel(panelContinue)
+            if (intent.getBooleanExtra(EXTRA_DEBUG_INTRO, false)) {
+                window.decorView.postDelayed({
+                    findViewById<Button>(R.id.btn_continue_narration).performClick()   // pasa a la linea de la Pokebola
+                    for (ms in listOf(900L, 7000L)) window.decorView.postDelayed({
+                        DebugLog.log(this, "tutorial: intro, a los $ms ms del toque, Continuar habilitado=${findViewById<Button>(R.id.btn_continue_narration).isEnabled}")
+                        debugDumpOwnView("debug_tutorial_intro_$ms.png")
+                    }, ms)
+                }, 800L)
+            }
         }
+    }
+
+    /** SOLO PRUEBAS: vuelca la propia ventana (sin capturar la pantalla del movil) a filesDir/[name]. */
+    private fun debugDumpOwnView(name: String) {
+        try {
+            val dv = window.decorView
+            val b = android.graphics.Bitmap.createBitmap(dv.width.coerceAtLeast(1), dv.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+            android.graphics.Canvas(b).apply { drawColor(android.graphics.Color.parseColor("#303030")); dv.draw(this) }
+            java.io.File(filesDir, name).outputStream().use { b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            b.recycle()
+        } catch (e: Exception) { DebugLog.log(this, "tutorial: volcado de $name fallo: $e") }
     }
 
     private fun advanceIntro() {
@@ -223,7 +254,7 @@ class TrainerSetupActivity : AppCompatActivity() {
             // La linea que habla de "unas criaturas llamadas Pokemon" enseña uno de verdad, JUNTO
             // a Oak (no en su lugar - como si lo sacara de la Pokedex), sorteado entre los
             // sprites locales (assets/localsprites/normal) - pedido explicito del usuario.
-            if (introIndex == 1) showRandomPokemon() else hideRandomPokemon()
+            if (introIndex == 1) { lockContinue(); showRandomPokemon() } else hideRandomPokemon()
         } else {
             hideRandomPokemon()
             showGenderPanel()
@@ -232,6 +263,7 @@ class TrainerSetupActivity : AppCompatActivity() {
 
     private fun hideRandomPokemon() {
         uiHandler.removeCallbacksAndMessages(null)
+        unlockContinue()   // se corta lo que hubiera en marcha: nada que esperar
         pokemonReveal.visibility = View.GONE
         eggReveal.visibility = View.GONE
         ballThrow.visibility = View.GONE
@@ -261,10 +293,11 @@ class TrainerSetupActivity : AppCompatActivity() {
             val ballFrames = ballKey?.let { loadBallFrames(it) }
             val ballOpen = ballKey?.let { loadBallOpen(it) }
             runOnUiThread {
-                if (bmp == null) return@runOnUiThread
+                if (bmp == null) { unlockContinue(); return@runOnUiThread }
                 if (ballFrames.isNullOrEmpty() || ballOpen == null) {
                     pokemonReveal.setImageBitmap(bmp)
                     pokemonReveal.visibility = View.VISIBLE
+                    unlockContinue()
                 } else {
                     animateBallThrow(ballFrames, ballOpen, bmp)
                 }
@@ -373,6 +406,7 @@ class TrainerSetupActivity : AppCompatActivity() {
                             ballBurst.visibility = View.GONE
                             pokemonReveal.setImageBitmap(targetBmp)
                             pokemonReveal.visibility = View.VISIBLE
+                            unlockContinue()   // ya ha aparecido: se puede seguir
                         }, 180L)
                         return
                     }
@@ -420,7 +454,7 @@ class TrainerSetupActivity : AppCompatActivity() {
                     uiHandler.postDelayed({ pokemonReveal.setImageBitmap(if (showTo) toBmp else fromBmp) }, t)
                     t += 90L
                 }
-                uiHandler.postDelayed({ pokemonReveal.setImageBitmap(toBmp) }, t)
+                uiHandler.postDelayed({ pokemonReveal.setImageBitmap(toBmp); unlockContinue() }, t)
             }
         }.start()
     }
@@ -448,7 +482,7 @@ class TrainerSetupActivity : AppCompatActivity() {
                         uiHandler.postDelayed(::tick, 1000L)
                     } else {
                         eggReveal.setImageBitmap(EffectGenerator.eggBitmap(this, 3, hatched = true))
-                        uiHandler.postDelayed({ if (babyBmp != null) eggReveal.setImageBitmap(babyBmp) }, 700L)
+                        uiHandler.postDelayed({ if (babyBmp != null) eggReveal.setImageBitmap(babyBmp); unlockContinue() }, 700L)
                     }
                 }
                 uiHandler.postDelayed(::tick, 1000L)
@@ -729,8 +763,10 @@ class TrainerSetupActivity : AppCompatActivity() {
             return
         }
         typedName = name
-        PetState.setTrainerName(this, typedName)
-        PetState.setTrainerSprite(this, selectedSprite)
+        if (!sandbox) {
+            PetState.setTrainerName(this, typedName)
+            PetState.setTrainerSprite(this, selectedSprite)
+        }
         if (editMode) {
             finish()
             return
@@ -765,6 +801,7 @@ class TrainerSetupActivity : AppCompatActivity() {
         // hideRandomPokemon.
         EffectGenerator.clearSparkles(pokemonRevealFrame)
         showPreviewFor(step)
+        unlockContinue()   // lo que dejara el paso anterior; cada animacion de abajo vuelve a bloquear hasta acabar
         val toName = step.spriteName
         val fromName = step.transformFrom
         val eggParent = step.eggParentName
@@ -773,19 +810,22 @@ class TrainerSetupActivity : AppCompatActivity() {
                 uiHandler.removeCallbacksAndMessages(null)
                 ballThrow.visibility = View.GONE
                 ballBurst.visibility = View.GONE
+                lockContinue(12000L)
                 playEggDemo(eggParent, toName)
             }
-            toName != null && fromName != null -> playQuickTransformDemo(fromName, toName, step.shiny)
+            toName != null && fromName != null -> { lockContinue(); playQuickTransformDemo(fromName, toName, step.shiny) }
             toName != null -> {
                 uiHandler.removeCallbacksAndMessages(null)
                 ballThrow.visibility = View.GONE
                 ballBurst.visibility = View.GONE
+                lockContinue()
                 Thread {
                     val bmp = SpriteRepository.localFirstFrameScaled(this, toName, step.shiny, PetState.spriteScaleMode(this))
                     runOnUiThread {
                         if (bmp != null) {
                             pokemonReveal.setImageBitmap(bmp)
                             pokemonReveal.visibility = View.VISIBLE
+                            unlockContinue()
                             // Estrellitas del Shiny (EffectGenerator.playShinySparkles, ya usado
                             // en el hatch de huevos real), SOLO alrededor del Pokemon
                             // (pokemonRevealFrame, no todo stageFrame que incluye a Oak) - pedido
@@ -808,7 +848,7 @@ class TrainerSetupActivity : AppCompatActivity() {
     }
 
     private fun launchMain() {
-        startActivity(Intent(this, MainActivity::class.java))
+        if (!sandbox) startActivity(Intent(this, MainActivity::class.java))
         finish()
     }
 
@@ -856,12 +896,20 @@ class TrainerSetupActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_EDIT_MODE = "edit_mode"
+        // SOLO PARA PRUEBAS (boton del menu Debug): recorre el tutorial (intro, genero, retrato, nombre y pasos) SIN guardar el
+        // nombre ni el retrato y sin abrir luego la app principal: al acabar o saltar solo se cierra.
+        const val EXTRA_DEBUG_SANDBOX = "debug_sandbox"
+        // SOLO PARA PRUEBAS: con el paso previsualizado, vuelca la propia vista a filesDir/debug_tutorial_<paso>.png a los 3 s.
+        const val EXTRA_DEBUG_DUMP = "debug_dump"
+        // SOLO PARA PRUEBAS: simula el toque en "Continuar" de la primera linea (la de la Pokebola) y comprueba/vuelca si "Continuar"
+        // queda bloqueado mientras dura la animacion y se libera al aparecer el Pokemon (log + debug_tutorial_intro_<ms>.png).
+        const val EXTRA_DEBUG_INTRO = "debug_intro"
         // SOLO PARA PRUEBAS (disparado a mano por adb, nunca desde la propia app): salta
         // directamente a un paso del tutorial (indice en tutorialLines) SIN pasar por
         // genero/retrato/nombre - showTutorialStep no toca ninguno de esos campos ni PetState, asi
         // que es seguro para previsualizar un paso nuevo sin arriesgar la identidad real del
-        // entrenador. Ejemplo (indice del paso de la Mazmorra, ver tutorialLines):
-        // adb shell am start -n com.example.pokegotchi/.TrainerSetupActivity --ei debug_preview_step 7
+        // entrenador. Ejemplo (indice del paso de la evolucion, ver tutorialLines):
+        // (la actividad no esta exportada: se lanza con MainActivity --ei debug_tutorial 1, que abre esto en sandbox y vuelca la vista)
         const val EXTRA_DEBUG_PREVIEW_STEP = "debug_preview_step"
     }
 }

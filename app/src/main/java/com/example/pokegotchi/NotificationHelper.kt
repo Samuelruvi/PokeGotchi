@@ -25,6 +25,11 @@ object NotificationHelper {
     private const val NOTIF_ID_EGG_HATCHED = 1004
     private const val NOTIF_ID_OFFER_READY = 1005
     const val NOTIF_ID_DUNGEON = 1006
+    private const val NOTIF_ID_NURSERY_SHINY = 1007
+    private const val NOTIF_ID_NURSERY_EGGS = 1008
+    private const val NOTIF_ID_NURSERY_EVOLVE = 1009
+    /** Extra del Intent de la notificacion de la guarderia: MainActivity abre la escena al recibirlo. */
+    const val EXTRA_OPEN_NURSERY = "open_nursery"
     // Canal APARTE (no el mismo pokegotchi_alerts de arriba) con importancia BAJA a proposito -
     // pedido explicito del usuario: "que no te notifique, es decir que no te salte la
     // notificacion, sino que cuando tu vas a ver la notificacion puedas ver el estado". Con
@@ -60,6 +65,7 @@ object NotificationHelper {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))   // con varias plazas, una linea por explorador
             .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -77,6 +83,13 @@ object NotificationHelper {
 
     fun cancelDungeonNotification(context: Context) = NotificationManagerCompat.from(context).cancel(NOTIF_ID_DUNGEON)
 
+    /** Nivel REAL del explorador (el de su individuo en PetState, el mismo del que sale su vida
+     *  maxima en DungeonSimulator.maxHp) - pedido explicito del usuario: que la notificacion de la
+     *  mazmorra diga el nivel del Pokemon. Se recalcula en cada refresco, asi que sube solo al
+     *  subir de nivel durante la carrera. */
+    private fun explorerLevel(context: Context, species: String, shiny: Boolean): Int =
+        PetState.levelOf(context, PetState.rawStats(context, species, shiny)?.xp ?: 0f, species)
+
     /** Titulo/texto/ongoing segun el estado actual - compartido por [refreshDungeonNotification]
      *  (publica la notificacion) y [buildDungeonNotification] (se la da a startForeground sin
      *  publicarla aparte, DungeonService ya se encarga de mostrarla). */
@@ -88,9 +101,20 @@ object NotificationHelper {
                 val floor = DungeonState.currentFloor(context)
                 val hp = DungeonState.currentHp(context).toInt()
                 val maxHp = DungeonSimulator.maxHp(context, species, shiny)
+                // Los compañeros (ver DungeonState.companions) pelean junto al explorador, cada uno con su vida:
+                // se nombran con su nivel y su vida actual ("caído" si ya no esta en pie).
+                val companions = DungeonState.companions(context)
+                val companionHps = DungeonState.companionHps(context)
+                val leaderPart = if (hp > 0) "HP $hp/$maxHp" else "caído"
+                val withText = if (companions.isEmpty()) "" else
+                    " · " + companions.withIndex().joinToString(" · ") { (i, c) ->
+                        val chp = companionHps.getOrNull(i)?.toInt() ?: DungeonSimulator.maxHp(context, c.first, c.second)
+                        "${PetState.displayLabel(c.first)} Nv. ${explorerLevel(context, c.first, c.second)} " +
+                            if (chp > 0) "HP $chp/${DungeonSimulator.maxHp(context, c.first, c.second)}" else "caído"
+                    }
                 return Triple(
-                    "🗺️ ${PetState.displayLabel(species)} explorando",
-                    "Piso $floor/${DungeonState.MAX_FLOOR} · HP $hp/$maxHp", true
+                    "🗺️ ${PetState.displayLabel(species)} Nv. ${explorerLevel(context, species, shiny)} explorando",
+                    "Piso $floor/${DungeonState.MAX_FLOOR} · $leaderPart$withText", true
                 )
             }
         }
@@ -100,7 +124,10 @@ object NotificationHelper {
         // ser null si se canceló a quien iba a entrar (ver DungeonState.cancelQueuedExplorer).
         if (DungeonState.isInCooldown(context)) {
             val species = DungeonState.currentSpecies(context)
-            val label = species?.let { PetState.displayLabel(it) } ?: "nadie"
+            val label = species?.let {
+                PetState.displayLabel(it) + " (Nv. ${explorerLevel(context, it, DungeonState.currentShiny(context))})" +
+                    DungeonState.companions(context).let { c -> if (c.isEmpty()) "" else " + " + c.joinToString(", ") { (n, _) -> PetState.displayLabel(n) } }
+            } ?: "nadie"
             val remainingMin = ((DungeonState.cooldownUntil(context) - System.currentTimeMillis())
                 .coerceAtLeast(0L) / 60_000L) + 1
             return Triple(
@@ -152,20 +179,21 @@ object NotificationHelper {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun openAppPI(context: Context, requestCode: Int): PendingIntent =
+    /** [openNursery]: al tocar el aviso la app abre directamente la escena de la guarderia (MainActivity, extra EXTRA_OPEN_NURSERY). */
+    private fun openAppPI(context: Context, requestCode: Int, openNursery: Boolean = false): PendingIntent =
         PendingIntent.getActivity(
-            context, requestCode, Intent(context, MainActivity::class.java),
+            context, requestCode, Intent(context, MainActivity::class.java).apply { if (openNursery) putExtra(EXTRA_OPEN_NURSERY, true) },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-    private fun notify(context: Context, id: Int, title: String, text: String) {
+    private fun notify(context: Context, id: Int, title: String, text: String, openNursery: Boolean = false) {
         if (!hasPermission(context)) return
         val notif = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(text)
             .setAutoCancel(true)
-            .setContentIntent(openAppPI(context, id))
+            .setContentIntent(openAppPI(context, id, openNursery))
             .build()
         try {
             NotificationManagerCompat.from(context).notify(id, notif)
@@ -197,6 +225,43 @@ object NotificationHelper {
      *  queda), para que no se quede colgada en la barra despues de resuelta. */
     fun cancelEggLaid(context: Context) = NotificationManagerCompat.from(context).cancel(NOTIF_ID_EGG_LAID)
     fun cancelEggHatched(context: Context) = NotificationManagerCompat.from(context).cancel(NOTIF_ID_EGG_HATCHED)
+
+    /** Avisos de los huevos de la GUARDERIA (ver PetState.settleNursery). Un shiny SIEMPRE avisa, aparte
+     *  e inmediatamente; el resumen de la tanda ("N huevos: X caramelos...") solo si el jugador eligio
+     *  "avisar de todos" (PetState.nurseryNotifyAlways) y, para no saturar, es UNO por liquidacion. */
+    fun deliverNurseryReport(context: Context, report: PetState.NurseryReport) {
+        fun pretty(n: String) = PetState.displayLabel(n).replaceFirstChar { it.uppercase() }
+        // Evolucion: avisa SIEMPRE (no depende del ajuste de huevos): el jugador no ve la guarderia mientras tanto y, hasta que
+        // no entre a evolucionarlo, ese Pokemon sigue ganando XP sin poder dar el paso.
+        if (report.evolvable.isNotEmpty()) {
+            val names = report.evolvable.map { pretty(it) }
+            if (names.size == 1) {
+                notify(context, NOTIF_ID_NURSERY_EVOLVE, "✨ ¡${names[0]} puede evolucionar!", "Está en la guardería. Toca para verlo.", openNursery = true)
+            } else {
+                notify(context, NOTIF_ID_NURSERY_EVOLVE, "✨ ¡${names.size} Pokémon pueden evolucionar!", "En la guardería: ${names.joinToString(", ")}. Toca para verlos.", openNursery = true)
+            }
+        }
+        if (report.shinies.isNotEmpty()) {
+            notify(
+                context, NOTIF_ID_NURSERY_SHINY, "✨ ¡Shiny en la guardería!",
+                "Ha nacido: ${report.shinies.joinToString(", ") { pretty(it) }}. Ya está en tu Pokédex."
+            )
+        }
+        if (report.hatched > 0 && PetState.nurseryNotifyAlways(context)) {
+            val parts = ArrayList<String>()
+            if (report.candies > 0) parts.add("${report.candies} caramelo${if (report.candies == 1) "" else "s"} a la mochila")
+            if (report.shinies.isNotEmpty()) parts.add("✨ ${report.shinies.size} shiny")
+            if (report.duplicateShinies > 0) parts.add("${report.duplicateShinies} shiny repetido${if (report.duplicateShinies == 1) "" else "s"}")
+            notify(
+                context, NOTIF_ID_NURSERY_EGGS,
+                if (report.hatched == 1) "Guardería: 1 huevo abierto" else "Guardería: ${report.hatched} huevos abiertos",
+                parts.joinToString(" · ").ifEmpty { "Nada que destacar" }
+            )
+        }
+    }
+
+    /** Retira el aviso de "puede evolucionar" de la guarderia cuando ya no queda nadie en ese caso (evoluciono o salio). */
+    fun cancelNurseryEvolution(context: Context) = NotificationManagerCompat.from(context).cancel(NOTIF_ID_NURSERY_EVOLVE)
 
     fun notifyOfferReady(context: Context) =
         notify(context, NOTIF_ID_OFFER_READY, "¡Regalo disponible!", "Hay un Pokémon nuevo esperando en tu Pokédex.")

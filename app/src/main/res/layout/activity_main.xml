@@ -69,6 +69,38 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:contentDescription="Mazmorra" />
+                <!-- Mochila (caramelos): solo visible desde el nivel de entrenador que la desbloquea
+                     (ver PetState.UNLOCK_CANDIES_LEVEL y MainActivity.refreshBagButton). -->
+                <TextView
+                    android:id="@+id/btn_bag"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🎒"
+                    android:textColor="#FFFFFF"
+                    android:textSize="22sp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:visibility="gone"
+                    android:contentDescription="Mochila" />
+                <!-- Guardería: solo visible desde el nivel de entrenador que la desbloquea
+                     (ver PetState.UNLOCK_NURSERY_LEVEL y MainActivity.refreshUnlockButtons). -->
+                <TextView
+                    android:id="@+id/btn_nursery"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🌱"
+                    android:textColor="#FFFFFF"
+                    android:textSize="22sp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:visibility="gone"
+                    android:contentDescription="Guardería" />
                 <TextView
                     android:id="@+id/btn_offer"
                     android:layout_width="wrap_content"

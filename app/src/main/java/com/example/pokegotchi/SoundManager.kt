@@ -27,6 +27,9 @@ object SoundManager {
     // soundId de SoundPool (cargando o ya listo). Solo se guardan los ultimos [MAX_SPECIES_CRIES]
     // (cada grito decodificado ocupa memoria) - al pasar de ahi se descarga el mas antiguo.
     private val speciesSounds = LinkedHashMap<String, Int>()
+    // Archivo de cada grito de [speciesSounds] (misma clave): si SoundPool no consigue cargarlo (ver playCryOrFallback) se
+    // reproduce con MediaPlayer en vez de caer al grito generico de Pikachu.
+    private val speciesFiles = HashMap<String, java.io.File>()
     private val readySounds = HashSet<Int>()
     private val failedSounds = HashSet<Int>()
     private val waiting = HashMap<Int, MutableList<(Boolean) -> Unit>>()
@@ -111,20 +114,20 @@ object SoundManager {
      *  arrancar el proceso llegaria con retraso: copiar el archivo + decodificarlo). */
     fun preload(context: Context) {
         ensure(context)
-        withActiveCry(context) { }
+        withActiveCry(context) { _, _ -> }
     }
 
     /** Resuelve el grito del Pokemon activo y llama a [onResolved] con su soundId de SoundPool, o
      *  con null si no se pudo (sin archivo de esa especie, error de carga) - entonces quien llama
      *  usa el grito generico. Se puede llamar desde cualquier hilo; nunca bloquea al que llama. */
-    private fun withActiveCry(context: Context, onResolved: (Int?) -> Unit) {
+    private fun withActiveCry(context: Context, onResolved: (Int?, java.io.File?) -> Unit) {
         val app = context.applicationContext
         val species = PetState.currentPokemon(app)
         val spriteName = PetState.displaySpriteName(app, species)   // la Mega/Gigantamax activa tiene su grito
         val dexId = PetState.currentPokemonId(app)
         val key = "$spriteName|$species"
         val cached = synchronized(lock) { speciesSounds[key] }
-        if (cached != null) { whenReady(cached, onResolved); return }
+        if (cached != null) { whenReady(cached, synchronized(lock) { speciesFiles[key] }, onResolved); return }
         loader.execute {
             val p = pool
             // Local primero (forma activa, luego la especie), y solo si falta de verdad, la copia
@@ -134,39 +137,63 @@ object SoundManager {
             } catch (e: Exception) { null }
             if (p == null || file == null) {
                 DebugLog.log(app, "grito: sin archivo para $species ($spriteName) - uso el generico")
-                onResolved(null)
+                onResolved(null, null)
                 return@execute
             }
             val sid = synchronized(lock) {
                 speciesSounds[key] ?: p.load(file.path, 1).also {
                     speciesSounds[key] = it
+                    speciesFiles[key] = file
                     while (speciesSounds.size > MAX_SPECIES_CRIES) {
                         val oldest = speciesSounds.entries.first()
                         speciesSounds.remove(oldest.key)
+                        speciesFiles.remove(oldest.key)
                         readySounds.remove(oldest.value)
                         failedSounds.remove(oldest.value)
                         p.unload(oldest.value)
                     }
                 }
             }
-            whenReady(sid, onResolved)
+            whenReady(sid, file, onResolved)
         }
     }
 
-    private fun whenReady(soundId: Int, cb: (Int?) -> Unit) {
+    private fun whenReady(soundId: Int, file: java.io.File?, cb: (Int?, java.io.File?) -> Unit) {
         var state = 0   // 1 = lista, -1 = fallo, 0 = aun cargando (avisara el listener de SoundPool)
         synchronized(lock) {
             state = when {
                 soundId in readySounds -> 1
                 soundId in failedSounds -> -1
                 else -> {
-                    waiting.getOrPut(soundId) { mutableListOf() }.add { ok -> cb(if (ok) soundId else null) }
+                    waiting.getOrPut(soundId) { mutableListOf() }.add { ok -> cb(if (ok) soundId else null, file) }
                     0
                 }
             }
         }
-        if (state == 1) cb(soundId) else if (state == -1) cb(null)
+        if (state == 1) cb(soundId, file) else if (state == -1) cb(null, file)
     }
+
+    /** Reproduce [sid] por SoundPool; si no cargo (SoundPool rechaza algunos gritos largos: naclstack, garganacl, klawf, bombirdier) se
+     *  toca el archivo de la propia especie con MediaPlayer, y solo si tampoco hay archivo, el grito generico. */
+    private fun playCryOrFallback(p: SoundPool, sid: Int?, file: java.io.File?, volume: Float, rate: Float) {
+        if (sid != null) { p.play(sid, volume, volume, 1, 0, rate); return }
+        if (file == null || !playFile(file, volume, rate)) p.play(cryIds.random(), volume, volume, 1, 0, rate)
+    }
+
+    private fun playFile(file: java.io.File, volume: Float, rate: Float): Boolean = try {
+        val mp = android.media.MediaPlayer()
+        mp.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+        mp.setDataSource(file.path)
+        mp.setVolume(volume, volume)
+        mp.setOnCompletionListener { it.release() }
+        mp.setOnErrorListener { m, _, _ -> m.release(); true }
+        mp.setOnPreparedListener { m ->
+            try { if (rate != 1f) m.playbackParams = m.playbackParams.setSpeed(rate) } catch (_: Exception) { }
+            try { m.start() } catch (_: Exception) { m.release() }
+        }
+        mp.prepareAsync()
+        true
+    } catch (e: Exception) { false }
 
     /** Grito del Pokemon ACTIVO (el de su especie/forma, ver withActiveCry) con ligera variacion de
      *  tono, para darle vida. Si no hay archivo de esa especie, el generico de siempre. */
@@ -174,7 +201,7 @@ object SoundManager {
         ensure(context)
         val p = pool ?: return
         val rate = 0.9f + Random.nextFloat() * 0.3f   // 0.9 .. 1.2
-        withActiveCry(context) { sid -> p.play(sid ?: cryIds.random(), 1f, 1f, 1, 0, rate) }
+        withActiveCry(context) { sid, file -> playCryOrFallback(p, sid, file, 1f, rate) }
     }
 
     /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_CRY_CHECK): para cada especie de
@@ -201,7 +228,11 @@ object SoundManager {
             }
             latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
             p.unload(sid)
-            sb.append("$name: ${f.name} ${f.length()} B md5=$md5 carga=${if (ok) "OK" else "FALLO"}").append(System.lineSeparator())
+            // Los que SoundPool rechaza deben poder sonar con MediaPlayer (el recurso que usa playCryOrFallback).
+            val mpOk = if (ok) null else try {
+                val mp = android.media.MediaPlayer(); mp.setDataSource(f.path); mp.prepare(); val ms = mp.duration; mp.release(); ms > 0
+            } catch (e: Exception) { false }
+            sb.append("$name: ${f.name} ${f.length()} B md5=$md5 carga=${if (ok) "OK" else "FALLO"}${if (mpOk == null) "" else " MediaPlayer=${if (mpOk) "OK" else "FALLO"}"}").append(System.lineSeparator())
         }
         return sb.toString().trimEnd()
     }
@@ -222,7 +253,7 @@ object SoundManager {
     fun playReject(context: Context) {
         ensure(context)
         val p = pool ?: return
-        withActiveCry(context) { sid -> p.play(sid ?: cryIds.random(), 0.5f, 0.5f, 1, 0, 0.6f) }
+        withActiveCry(context) { sid, file -> playCryOrFallback(p, sid, file, 0.5f, 0.6f) }
     }
 
 }

@@ -127,6 +127,58 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider         //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW --ef xp 10
         const val ACTION_DEBUG_DUMP_XP_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_XP_VIEW"
 
+        // SOLO PARA PRUEBAS: comprueba el nivel de entrenador guardado y la mochila de caramelos (ver
+        // PetState.debugCandySelfTest); deja la partida como estaba. Informe en el log ("mochila").
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_BAG_CHECK
+        const val ACTION_DEBUG_BAG_CHECK = "com.example.pokegotchi.ACTION_DEBUG_BAG_CHECK"
+        // SOLO PARA PRUEBAS: prueba la guarderia con datos reales (meter/sacar, bloqueos, XP de 3 h
+        // simuladas) y lo deja todo como estaba; el resultado va al registro de depuracion.
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_NURSERY_CHECK
+        const val ACTION_DEBUG_NURSERY_CHECK = "com.example.pokegotchi.ACTION_DEBUG_NURSERY_CHECK"
+        // SOLO PARA PRUEBAS: prueba los compañeros de la mazmorra (reparto de XP, bloqueos, bucle con
+        // grupo) con datos reales SOLO si la mazmorra esta libre, y lo deja todo como estaba (ver
+        // DungeonState.debugPartySelfTest). Informe en el log ("grupo").
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_PARTY_CHECK
+        const val ACTION_DEBUG_PARTY_CHECK = "com.example.pokegotchi.ACTION_DEBUG_PARTY_CHECK"
+        // SOLO PARA PRUEBAS: compara en simulacion el explorador solo contra el equipo (ver
+        // DungeonSimulator.debugTeamBalance); no toca nada real. Extra opcional "n" (carreras por configuracion, 40).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_TEAM_BALANCE --ei n 40
+        const val ACTION_DEBUG_TEAM_BALANCE = "com.example.pokegotchi.ACTION_DEBUG_TEAM_BALANCE"
+        // SOLO PARA PRUEBAS: comprueba las reglas del combate de equipo con cientos de combates al azar (ver
+        // DungeonSimulator.debugTeamFightCheck); no toca nada real. Extra opcional "n" (combates, 400).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_TEAM_FIGHT_CHECK --ei n 400
+        const val ACTION_DEBUG_TEAM_FIGHT_CHECK = "com.example.pokegotchi.ACTION_DEBUG_TEAM_FIGHT_CHECK"
+        // SOLO PARA PRUEBAS: de donde sale el pozo del nivel de entrenador y cuanto hace falta para cada nivel (PetState.debugTrainerReport).
+        const val ACTION_DEBUG_TRAINER_REPORT = "com.example.pokegotchi.ACTION_DEBUG_TRAINER_REPORT"
+        // SOLO PARA PRUEBAS EN LA CUENTA SECUNDARIA (usuario 999): arnes de QA (QaHarness) que BORRA el estado del juego y provoca
+        // combinaciones raras comprobando invariantes; se niega a correr en la cuenta principal. Informe en files/qa_report.txt.
+        // adb shell am broadcast --user 999 -n com.example.pokegotchi/.PokeWidgetProvider -a com.example.pokegotchi.ACTION_DEBUG_QA --es suites conflicts,data --ei n 300 --el seed 7
+        const val ACTION_DEBUG_QA = "com.example.pokegotchi.ACTION_DEBUG_QA"
+        // SOLO PARA PRUEBAS: simula la escena de la guarderia (vista fuera de pantalla, reloj simulado) y comprueba que ni los
+        // Pokemon ni la pelota atraviesan el bebedero y la cesta y por que lados comen/beben (ver NurseryView.debugCollisionCheck).
+        // Extras opcionales: "secs" (segundos simulados, 600) y "stress" (true = muebles pegados a la valla y entre si).
+        // Guarda capturas de quien come/bebe por los lados en filesDir/debug_nursery_<accion>_<lado>.png
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_NURSERY_COLLISION --ei secs 600
+        const val ACTION_DEBUG_NURSERY_COLLISION = "com.example.pokegotchi.ACTION_DEBUG_NURSERY_COLLISION"
+        // SOLO PARA PRUEBAS: dibuja la vista de la mazmorra ENTERA (panel de arriba + minimapa) con la
+        // carrera real guardada, fuera de pantalla y en solo lectura (ver DungeonView.debugSnapshot),
+        // y la vuelca a filesDir/debug_dungeon_view.png. Necesita una carrera en curso.
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_DUNGEON_VIEW
+        const val ACTION_DEBUG_DUMP_DUNGEON_VIEW = "com.example.pokegotchi.ACTION_DEBUG_DUMP_DUNGEON_VIEW"
+        // SOLO PARA PRUEBAS: dibuja mapas de ejemplo (pisos generados al azar, no toca la partida) con
+        // el terreno de antes (izquierda) y el nuevo con bordes (derecha, DungeonTileArt) y los
+        // vuelca a PNG en filesDir (debug_terrain_<n>.png) - la forma de ver el aspecto sin capturar
+        // la pantalla del movil. Extra opcional "n" (cuantos pisos, 6 por defecto).
+        // adb shell am broadcast -n com.example.pokegotchi/.PokeWidgetProvider \
+        //   -a com.example.pokegotchi.ACTION_DEBUG_DUMP_TERRAIN --ei n 6
+        const val ACTION_DEBUG_DUMP_TERRAIN = "com.example.pokegotchi.ACTION_DEBUG_DUMP_TERRAIN"
         // SOLO PARA PRUEBAS: lista que archivo de grito usaria cada especie (tamaño/huella, y si
         // SoundPool lo carga) y hace sonar UNA vez el grito del Pokemon activo. Informe en el log
         // ("gritos"). Extra opcional "names" (lista separada por comas).
@@ -201,6 +253,8 @@ class PokeWidgetProvider : AppWidgetProvider() {
         // margen de silencio REAL despues del gesto, no una ventana que ya se solapa con su
         // propia duracion. Es POR TIPO de accion (tocar "lavar" no bloquea "dar de comer").
         private const val ACTION_COOLDOWN_MS = 6000L
+        // Margen corto (solo contra un doble toque accidental) cuando el Pokemon sigue necesitando la accion tras la anterior.
+        private const val ACTION_REPEAT_DEBOUNCE_MS = 1200L
         @Volatile private var lastAcceptedFeed = 0L
         @Volatile private var lastAcceptedPet = 0L
         @Volatile private var lastAcceptedWash = 0L
@@ -373,8 +427,14 @@ class PokeWidgetProvider : AppWidgetProvider() {
                 // Ademas del solape, EL MISMO boton en cooldown (ver ACTION_COOLDOWN_MS arriba):
                 // sin esto, un segundo toque ya fuera de la ventana de solape podia ser aceptado
                 // de verdad y encadenar una segunda animacion completa detras de la primera.
-                val onCooldown = System.currentTimeMillis() - lastAcceptedAt(action) < ACTION_COOLDOWN_MS
-                dbg(context, "recibido $action | reactionRunning=$reactionRunning eggPulseRunning=$eggPulseRunning activeReaction=$ar activeRejectFlash=$arf onCooldown=$onCooldown -> busy=$busy")
+                // PERO si el Pokemon SIGUE necesitando esa accion (una sola comida no siempre le quita el hambre: sube 55 y el umbral
+                // llega a 65, sobre todo tras un rato sin cuidarlo), repetir es lo que el jugador quiere: antes el boton quedaba ignorado
+                // EN SILENCIO 6 s despues de cada animacion (bug reportado: "sigue pidiendo lo mismo y no me deja darle otra vez").
+                // Con la necesidad aun en pie solo se deja un margen corto contra el doble toque accidental.
+                val sinceAccepted = System.currentTimeMillis() - lastAcceptedAt(action)
+                val stillNeeded = try { PetState.isNeeded(context, PetState.loadWithDecay(context), action) } catch (_: Throwable) { false }
+                val onCooldown = sinceAccepted < (if (stillNeeded) ACTION_REPEAT_DEBOUNCE_MS else ACTION_COOLDOWN_MS)
+                dbg(context, "recibido $action | reactionRunning=$reactionRunning eggPulseRunning=$eggPulseRunning activeReaction=$ar activeRejectFlash=$arf stillNeeded=$stillNeeded onCooldown=$onCooldown -> busy=$busy")
                 if (!busy && !onCooldown) {
                     val result = PetState.tryApplyAction(context, action)
                     if (result.applied) {
@@ -498,6 +558,233 @@ class PokeWidgetProvider : AppWidgetProvider() {
                     val keep = intent.getStringExtra("keep")
                     PetState.repairMechanicFormsSeen(context, name, keep)
                     dbg(context, "mechanic_forms_seen de $name reparado por debug (keep=$keep)")
+                }
+            }
+            ACTION_DEBUG_BAG_CHECK -> {
+                DebugLog.log(context, "mochila - autocomprobacion:" + System.lineSeparator() + PetState.debugCandySelfTest(context))
+                renderAll(context, mgr)
+            }
+            ACTION_DEBUG_TEAM_BALANCE -> {
+                // Largo (cientos de carreras simuladas): en un hilo propio, el informe va al registro.
+                val n = intent.getIntExtra("n", 40).coerceIn(5, 400)
+                // Extras opcionales "m2"/"m3" (float): multiplicador de enemigos con 2 y 3 Pokemon SOLO para esta medicion.
+                val m2 = if (intent.hasExtra("m2")) intent.getFloatExtra("m2", 1f) else null
+                val m3 = if (intent.hasExtra("m3")) intent.getFloatExtra("m3", 1f) else null
+                Thread {
+                    try {
+                        ExplorerPartyRules.debugMultiplier2 = m2; ExplorerPartyRules.debugMultiplier3 = m3
+                        val tag = if (m2 != null || m3 != null) " [multiplicador de enemigos con 2 = ${m2 ?: ExplorerPartyRules.MULTIPLIER_2}, con 3 = ${m3 ?: ExplorerPartyRules.MULTIPLIER_3}]" else ""
+                        DebugLog.log(context, "equipo - simulacion de balance$tag:" + System.lineSeparator() + DungeonSimulator.debugTeamBalance(context, n))
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "equipo - simulacion de balance FALLO con una excepcion: $t")
+                    } finally {
+                        ExplorerPartyRules.debugMultiplier2 = null; ExplorerPartyRules.debugMultiplier3 = null
+                    }
+                }.start()
+            }
+            ACTION_DEBUG_QA -> {
+                val suites = (intent.getStringExtra("suites") ?: "conflicts").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                val seed = intent.getLongExtra("seed", 1L)
+                val n = intent.getIntExtra("n", 200)
+                Thread {
+                    try {
+                        val report = QaHarness.run(context, suites, seed, n)
+                        java.io.File(context.filesDir, "qa_report_${suites.joinToString("_")}.txt").writeText(report)
+                        DebugLog.log(context, "QA terminado ($suites): " + report.lines().lastOrNull { it.startsWith("RESUMEN") || it.startsWith("QA BLOQUEADO") })
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "QA FALLO con una excepcion: $t")
+                    }
+                }.start()
+            }
+            ACTION_DEBUG_TRAINER_REPORT -> {
+                DebugLog.log(context, "entrenador - informe del pozo:" + System.lineSeparator() + PetState.debugTrainerReport(context))
+            }
+            ACTION_DEBUG_NURSERY_COLLISION -> {
+                val pending = goAsync()
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        val dm = context.resources.displayMetrics
+                        val w = dm.widthPixels; val h = dm.heightPixels
+                        val stress = intent.getBooleanExtra("stress", false)
+                        val view = NurseryView(context)
+                        view.debugNoChurn = intent.getBooleanExtra("nochurn", false)   // sin cambios de visitantes durante la simulacion
+                        view.measure(android.view.View.MeasureSpec.makeMeasureSpec(w, android.view.View.MeasureSpec.EXACTLY), android.view.View.MeasureSpec.makeMeasureSpec(h, android.view.View.MeasureSpec.EXACTLY))
+                        view.layout(0, 0, w, h)
+                        val names = PetState.ownedIndividuals(context).map { it.first to false }.distinct().take(6)
+                        view.setMembers(names)
+                        view.setVisitors(listOf("psyduck" to 10, "litten" to 10))   // la mayor aglomeracion real: 6 del jugador + 2 visitantes
+                        // Disposicion de estres: los dos muebles pegados entre si y casi contra la valla izquierda.
+                        if (stress) view.setFurniturePositions(0.20f to 0.50f, 0.34f to 0.52f)
+                        // "real": los muebles donde los dejaste en la guarderia.
+                        if (intent.getBooleanExtra("real", false)) view.setFurniturePositions(PetState.nurseryFurniturePos(context, "trough"), PetState.nurseryFurniturePos(context, "basket"))
+                        val secs = intent.getIntExtra("secs", 600).coerceIn(30, 3600)
+                        // "random": N disposiciones al azar de los dos muebles (incluidas las que se tocan o pegan a la valla).
+                        val randomLayouts = intent.getIntExtra("random", 0)
+                        val only = intent.getIntExtra("only", -1)   // repite solo la disposicion de ese numero
+                        if (randomLayouts > 0) {
+                            val rnd = kotlin.random.Random(99)
+                            var bad = 0
+                            val notes = ArrayList<String>()
+                            repeat(randomLayouts) { n ->
+                                val tp = (0.2f + rnd.nextFloat() * 0.6f) to (0.42f + rnd.nextFloat() * 0.45f)
+                                val bp = (0.2f + rnd.nextFloat() * 0.6f) to (0.42f + rnd.nextFloat() * 0.45f)
+                                if (only >= 0 && n != only) return@repeat   // (las posiciones se sortean igual para que "only" repita exactamente la disposicion n)
+                                view.setFurniturePositions(tp, bp)
+                                val r = view.debugCollisionCheck(secs) { _, bmp -> bmp.recycle() }
+                                if (!r.contains("TODO CORRECTO")) { bad++; if (notes.size < 4) notes.add("disposicion $n (bebedero $tp, cesta $bp): $r") }
+                            }
+                            DebugLog.log(context, "guarderia - colisiones con $randomLayouts disposiciones al azar de ${secs}s: ${if (bad == 0) "TODAS CORRECTAS" else "$bad CON PROBLEMAS"}" + notes.joinToString("") { System.lineSeparator() + "  ! " + it })
+                            return@post
+                        }
+                        val tag = if (stress) "estres" else if (intent.getBooleanExtra("real", false)) "real" else "normal"
+                        val result = view.debugCollisionCheck(secs) { label, bmp ->
+                            File(context.filesDir, "debug_nursery_${tag}_$label.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            bmp.recycle()
+                        }
+                        DebugLog.log(context, "guarderia - colisiones ($tag, ${names.size} Pokemon): $result")
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "guarderia - colisiones FALLO con una excepcion: $t")
+                    } finally { pending.finish() }
+                }
+            }
+            ACTION_DEBUG_TEAM_FIGHT_CHECK -> {
+                val n = intent.getIntExtra("n", 400).coerceIn(10, 5000)
+                val pending = goAsync()
+                Thread {
+                    try {
+                        DebugLog.log(context, "equipo - comprobacion del combate:" + System.lineSeparator() + DungeonSimulator.debugTeamFightCheck(context, n))
+                        DebugLog.log(context, "equipo - comprobacion del seguimiento:" + System.lineSeparator() + DungeonSimulator.debugFollowCheck(context))
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "equipo - comprobacion del combate FALLO con una excepcion: $t")
+                    } finally {
+                        pending.finish()
+                    }
+                }.start()
+            }
+            ACTION_DEBUG_PARTY_CHECK -> {
+                // En un hilo aparte (puede tardar unos segundos) con goAsync.
+                val pending = goAsync()
+                Thread {
+                    try {
+                        DebugLog.log(context, "grupo - autocomprobacion:" + System.lineSeparator() + DungeonState.debugPartySelfTest(context))
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "grupo - autocomprobacion FALLO con una excepcion: $t")
+                    } finally {
+                        pending.finish()
+                    }
+                }.start()
+            }
+            ACTION_DEBUG_NURSERY_CHECK -> {
+                DebugLog.log(context, "guarderia - autocomprobacion:" + System.lineSeparator() + PetState.debugNurserySelfTest(context))
+                renderAll(context, mgr)
+            }
+            ACTION_DEBUG_DUMP_DUNGEON_VIEW -> {
+                val pending = goAsync()
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        // Carrera SINTETICA (pisos generados al azar con el Pokemon activo): no lee ni
+                        // toca la partida real.
+                        val sp = PetState.currentPokemon(context)
+                        val dm = context.resources.displayMetrics
+                        // Extra opcional "party" ("especie1,especie2"): los pinta como compañeros que siguen al explorador.
+                        val party = intent.getStringExtra("party")?.split(",")?.map { it.trim().lowercase() to false }?.filter { it.first.isNotEmpty() } ?: emptyList()
+                        // Extra opcional "combat" ("behind" | "swap" | "both"): en vez de los pisos de muestra, busca un combate de
+                        // equipo (los tres Pokemon de mas nivel que tengas, sobre un RunState de mentira) donde el enemigo alcanza
+                        // a un compañero y/o cambia quien va delante por poca vida, y lo dibuja en ese golpe.
+                        val combat = intent.getStringExtra("combat")
+                        if (combat != null) {
+                            val team = PetState.ownedIndividuals(context)
+                                .mapNotNull { (n, s) -> PetState.levelForPokemon(context, n, s)?.let { Triple(n, s, it) } }
+                                .let { l -> if (combat == "defeat" || combat == "die") l.sortedBy { it.third } else l.sortedByDescending { it.third } }.take(3).map { it.first to it.second }
+                            val wantBehind = combat == "behind" || combat == "both"
+                            val wantSwap = combat == "swap" || combat == "both"
+                            val wantMove = combat == "move"       // compañeros que se acercan al enemigo en una sala
+                            val wantBlocked = combat == "corridor" // en un pasillo, el que va detras no llega y no pega
+                            val wantDefeat = combat == "defeat"   // el combate FATAL: todo el equipo cae (se ve entero antes de cerrar la carrera)
+                            val wantDeath = combat == "die"       // uno de los tuyos cae a mitad de combate: se ve encogiendose (extra "shrink" 0..1 = cuanto)
+                            val shrink = intent.getFloatExtra("shrink", 0.5f)
+                            val found = if (team.size < 2) null else DungeonView(context).debugCombatSnapshot(
+                                team, dm.widthPixels, (dm.heightPixels * 0.8f).toInt(), wantBehind, wantSwap, if (wantDefeat) 0.04f else if (wantDeath) 0.12f else if (wantSwap) 0.22f else 1f, wantMove, wantBlocked, wantDefeat, wantDeath, shrink
+                            ) { rounds ->
+                                when {
+                                    wantDeath -> rounds.indexOfFirst { r -> r.memberHpAfter.indices.any { m -> r.memberHpAfter[m] <= 0f && rounds[0].memberHpAfter[m] > 0f } }.coerceAtLeast(0)
+                                    wantSwap -> rounds.indexOfFirst { it.front != rounds[0].front }.takeIf { it >= 0 } ?: 0
+                                    wantMove -> rounds.indexOfFirst { it.move }.coerceAtLeast(0)
+                                    wantBlocked -> rounds.indexOfFirst { !it.playerActs && !it.missed }.coerceAtLeast(0)
+                                    wantDefeat -> rounds.size - 1   // el ultimo golpe: el equipo ya caido
+                                    else -> (rounds.indexOfFirst { !it.playerActs && !it.missed }.takeIf { it >= 0 } ?: rounds.indexOfFirst { !it.playerActs }).coerceAtLeast(0)
+                                }
+                            }
+                            if (found == null) {
+                                DebugLog.log(context, "debug: combate de equipo ($combat) NO encontrado con ${team.map { it.first }}")
+                            } else {
+                                File(context.filesDir, "debug_dungeon_view_combat_$combat.png").outputStream().use { found.first.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                                DebugLog.log(context, "debug: combate de equipo ($combat) volcado con ${team.map { it.first }}: ${found.second}")
+                                found.first.recycle()
+                            }
+                            return@post
+                        }
+                        for ((n, floor) in listOf(12, 40, 83).withIndex()) {
+                            val bmp = DungeonView(context).debugSnapshot(sp, false, floor, dm.widthPixels, (dm.heightPixels * 0.8f).toInt(), party)
+                            File(context.filesDir, "debug_dungeon_view_$n.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            bmp.recycle()
+                            DebugLog.log(context, "debug: vista de mazmorra $n volcada (piso $floor, $sp, ${dm.widthPixels}x${(dm.heightPixels * 0.8f).toInt()})")
+                        }
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "debug: vista de mazmorra FALLO: $t")
+                    } finally { pending.finish() }
+                }
+            }
+            ACTION_DEBUG_DUMP_TERRAIN -> {
+                val pending = goAsync()
+                val count = intent.getIntExtra("n", 6)
+                // En el hilo principal: DungeonView es una View de verdad (la misma que pinta el
+                // juego) y el volcado es corto.
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        val view = DungeonView(context)
+                        val realTile = view.debugTilePx()
+                        val tilePx = 18f
+                        fun tex(name: String): Bitmap? {
+                            val id = context.resources.getIdentifier(name, "drawable", context.packageName)
+                            return if (id != 0) BitmapFactory.decodeResource(context.resources, id) else null
+                        }
+                        val wallB = tex("dungeontile_wall_cave")
+                        val r = Rect()
+                        for ((n, floor) in listOf(1, 12, 25, 40, 61, 83).take(count).withIndex()) {
+                            val map = DungeonSimulator.generateMap(context, floor, "pikachu")
+                            val w = (map.width * tilePx).toInt(); val h = (map.height * tilePx).toInt()
+                            val bmp = Bitmap.createBitmap(w * 2 + 8, h, Bitmap.Config.ARGB_8888)
+                            val cv = Canvas(bmp)
+                            cv.drawColor(0xFF15131A.toInt())
+                            val floorB = tex(map.floorTileName)
+                            for (y in 0 until map.height) for (x in 0 until map.width) {
+                                r.set((x * tilePx).toInt(), (y * tilePx).toInt(), ((x + 1) * tilePx).toInt(), ((y + 1) * tilePx).toInt())
+                                (if (map.isWall(x, y)) wallB else floorB)?.let { cv.drawBitmap(it, null, r, null) }
+                            }
+                            // derecha: el MISMO codigo que el panel de arriba del juego (terreno + escaleras)
+                            cv.save(); cv.translate(w + 8f, 0f); cv.scale(tilePx / realTile, tilePx / realTile)
+                            view.debugDrawTerrain(cv, map)
+                            cv.restore()
+                            File(context.filesDir, "debug_terrain_$n.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            bmp.recycle()
+                            // recortes a media escala de las dos escaleras (bajada = inicio, subida = salida)
+                            val z = 0.5f; val tz = realTile * z; val span = 5
+                            val crop = Bitmap.createBitmap((tz * span * 2 + 8).toInt(), (tz * span).toInt(), Bitmap.Config.ARGB_8888)
+                            val cc = Canvas(crop); cc.drawColor(0xFF15131A.toInt())
+                            for ((k, pos) in listOf(map.startX to map.startY, map.exitX to map.exitY).withIndex()) {
+                                cc.save(); cc.translate(k * (tz * span + 8f), 0f); cc.clipRect(0f, 0f, tz * span, tz * span)
+                                cc.scale(z, z); cc.translate(-(pos.first - 2) * realTile, -(pos.second - 2) * realTile)
+                                view.debugDrawTerrain(cc, map)
+                                cc.restore()
+                            }
+                            File(context.filesDir, "debug_stairs_$n.png").outputStream().use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            crop.recycle()
+                            DebugLog.log(context, "debug: terreno $n piso=$floor ${map.width}x${map.height} suelo=${map.floorTileName} tileset=${DungeonTilePicker.tilesetFor(map.floorTileName)}")
+                        }
+                    } catch (t: Throwable) {
+                        DebugLog.log(context, "debug: volcado de terreno FALLO: $t")
+                    } finally { pending.finish() }
                 }
             }
             ACTION_DEBUG_CRY_CHECK -> {
@@ -652,6 +939,10 @@ class PokeWidgetProvider : AppWidgetProvider() {
      *  avisar hasta que la condicion se resuelva y vuelva a aparecer (ver PetState). */
     private fun checkAlerts(context: Context) {
         if (!PetState.hasChosenStarter(context)) return
+        // Guarderia: liquida XP y huevos de los Pokemon que hay dentro (y avisa segun el ajuste) - aqui
+        // porque este tick de 15 min es lo que corre con la app cerrada. Nunca debe tumbar los avisos de
+        // siempre: cualquier fallo se queda en el log.
+        try { PetState.settleNursery(context) } catch (t: Throwable) { dbg(context, "guarderia: error al liquidar en el tick: $t") }
         val s = PetState.loadWithDecay(context)
 
         val canEvolve = PetState.pendingEvolution(context, s) != null

@@ -93,6 +93,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // SOLO PRUEBAS (cuenta secundaria): lanza el arnes de QA en una pantalla en primer plano (ver QaActivity). Va ANTES de las
+        // redirecciones de abajo porque el propio arnes borra el estado (sin perfil de entrenador esta pantalla redirige al tutorial).
+        intent?.getStringExtra("debug_qa")?.let { suites ->
+            startActivity(Intent(this, QaActivity::class.java).putExtra("suites", suites)
+                .putExtra("n", intent.getIntExtra("n", 200)).putExtra("seed", intent.getLongExtra("seed", 1L)))
+            finish()
+            return
+        }
+        // Consejos de primera vez: en una partida que ya existia se dan todos por vistos (ver TutorialTips.initIfNeeded).
+        TutorialTips.initIfNeeded(this)
         NotificationHelper.ensureChannel(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -131,6 +141,8 @@ class MainActivity : AppCompatActivity() {
 
         loadAllMons()
         currentGen = allMons.find { it.name == selected }?.gen ?: 1
+        // El orden elegido en "⇅ Ordenar" se recuerda entre arranques (la pestaña no: abre en "Mis Pokemon", pedido anterior).
+        sortBy = UiPrefs.string(this, UiPrefs.MAIN_SORT, "id").takeIf { it in UiPrefs.MAIN_SORTS } ?: "id"
         refreshRows()
         buildGenRow()
 
@@ -183,6 +195,8 @@ class MainActivity : AppCompatActivity() {
         // ver la Mazmorra enterrada en Ajustes: "no me gusta la ubicacion de la mazmorra. me
         // gustaria que puedas entrar al menu de una forma mas organica".
         findViewById<TextView>(R.id.btn_dungeon).setOnClickListener { startActivity(Intent(this, DungeonActivity::class.java)) }
+        findViewById<TextView>(R.id.btn_bag).setOnClickListener { showBagDialog() }
+        findViewById<TextView>(R.id.btn_nursery).setOnClickListener { showNurseryDialog() }
         showLevel()
         WidgetRefresh.updateWidgets(this)   // refresca el widget al abrir (regenera sprites de cache antigua)
         // El arranque del servicio de la mazmorra (retomar el avance de fondo o la espera del
@@ -193,6 +207,66 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)   // para que onResume vea los extras de depuracion (ver debugDemoOffer)
+        openDungeonDumpIfRequested()   // con la app ya en primer plano onResume no se repite
+        if (PetState.hasChosenStarter(this)) openNurseryIfRequested()   // idem: tocar el aviso con la app ya abierta no pasa por onResume
+    }
+
+    /** Al tocar el aviso de la guarderia ("puede evolucionar") se abre directamente la escena. Consume el extra (se llama
+     *  desde onResume y desde onNewIntent: con la app ya en primer plano solo se ejecuta esta ultima). */
+    private fun openNurseryIfRequested() {
+        if (intent?.getBooleanExtra(NotificationHelper.EXTRA_OPEN_NURSERY, false) != true) return
+        intent.removeExtra(NotificationHelper.EXTRA_OPEN_NURSERY)
+        if (PetState.nurseryUnlocked(this)) {
+            dbg("guarderia: se abre desde el aviso de la notificacion")
+            window.decorView.post { showNurseryDialog() }
+        }
+    }
+
+    /** SOLO PARA PRUEBAS: abre la mazmorra (que no esta exportada) y vuelca su ventana a PNG.
+     *  adb shell am start -n com.example.pokegotchi/.MainActivity --ez debug_dungeon_dump true [--es companion_state pick|filled] */
+    private fun openDungeonDumpIfRequested() {
+        if (intent?.getBooleanExtra("debug_dungeon_dump", false) != true) return
+        val state = intent.getStringExtra("companion_state")
+        intent.removeExtra("debug_dungeon_dump")
+        // Handler propio, no decorView.post: con la app ya abierta pero detras/pantalla apagada, la vista
+        // esta "desacoplada" y su post no corre.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            startActivity(Intent(this, DungeonActivity::class.java).putExtra("debug_dump", true).putExtra("companion_state", state)
+                .putExtra("debug_query", intent.getStringExtra("debug_query")))
+        }
+    }
+
+    private fun debugDumpMainGrid() {
+        val added = ArrayList<Pair<String, Boolean>>()
+        if (PetState.nurseryUnlocked(this) && PetState.nurseryMembers(this).isEmpty()) {
+            PetState.ownedIndividuals(this).filter { (n, s) -> PetState.nurseryBlockReason(this, n, s) == null }
+                .take(PetState.nurseryCapacity(this).coerceAtMost(2)).forEach { c -> if (PetState.nurseryAdd(this, c.first, c.second) == null) added.add(c) }
+        }
+        adapter.notifyDataSetChanged()
+        dbg("cuadricula principal: ${allMons.size} especies en la lista, ${allMons.count { PetState.isUnlocked(this, it.name) }} desbloqueadas, contador '${ownedSpeciesCountText()}', filas ${rows.size}")
+        val rv = findViewById<RecyclerView>(R.id.rv)
+        val decor = window.decorView
+        fun dump(fileName: String) {
+            try {
+                val bmp = Bitmap.createBitmap(decor.width.coerceAtLeast(1), decor.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(bmp).apply { drawColor(Color.WHITE); decor.draw(this) }
+                java.io.File(filesDir, fileName).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bmp.recycle()
+            } catch (e: Exception) { dbg("volcado de la cuadricula fallo: $e") }
+        }
+        // Tres volcados: el principio (el activo en verde), la primera fila en la guarderia (rosa) y el lider de la mazmorra (rojo).
+        val nursery = PetState.nurseryMembers(this).firstOrNull()?.first
+        val dungeon = DungeonState.party(this).firstOrNull()?.first
+        decor.postDelayed({ dump("debug_main_grid.png") }, 2000L)
+        decor.postDelayed({ rows.indexOfFirst { it.name == nursery }.takeIf { it >= 0 }?.let { rv.scrollToPosition(it) } }, 2600L)
+        decor.postDelayed({ dump("debug_main_grid_nursery.png") }, 3600L)
+        decor.postDelayed({ rows.indexOfFirst { it.name == dungeon }.takeIf { it >= 0 }?.let { rv.scrollToPosition(it) } }, 4200L)
+        decor.postDelayed({
+            dump("debug_main_grid_dungeon.png")
+            dbg("cuadricula principal volcada (guarderia: ${PetState.nurseryMembers(this).map { it.first }}, muestra: ${added.map { it.first }}, mazmorra real: ${DungeonState.party(this).map { it.first }})")
+            added.forEach { PetState.nurseryRemove(this, it.first, it.second) }
+            adapter.notifyDataSetChanged()
+        }, 5200L)
     }
 
     /** SOLO PARA PRUEBAS: lista de ejemplo para ver como se pintan los distintivos del regalo -
@@ -213,6 +287,51 @@ class MainActivity : AppCompatActivity() {
         if (intent?.getBooleanExtra("debug_offer_preview", false) == true) {
             intent.removeExtra("debug_offer_preview")
             window.decorView.post { showOfferDialog(debugDemoOffer()) }
+        }
+        // SOLO PARA PRUEBAS: abre la guarderia y vuelca su vista (y la del selector) a PNG en filesDir.
+        //   adb shell am start -n com.example.pokegotchi/.MainActivity --ez debug_nursery_preview true
+        if (intent?.getBooleanExtra("debug_nursery_preview", false) == true) {
+            intent.removeExtra("debug_nursery_preview")
+            window.decorView.post { showNurseryDialog(preview = true) }
+        }
+        openNurseryIfRequested()
+        // SOLO PARA PRUEBAS (cuenta secundaria): abre el selector de evolucion de una especie con varias ramas y vuelca su ventana a
+        // filesDir/debug_evo_choice.png (marca con Poke Ball las que ya tienes).
+        //   adb shell am start -S --user 999 -n com.example.pokegotchi/.MainActivity --es debug_evo_choice eevee [--ez shiny true]
+        intent?.getStringExtra("debug_evo_choice")?.takeIf { QaHarness.isSecondaryUser() }?.let { species ->
+            val shinyWanted = intent.getBooleanExtra("shiny", false)
+            intent.removeExtra("debug_evo_choice"); intent.removeExtra("shiny")
+            window.decorView.post {
+                val options = PetState.evolutionInfo(this, species)?.evolvesTo.orEmpty()
+                if (options.isNotEmpty()) {
+                    val dlg = showEvolutionChoiceDialog(species, options, shinyWanted)
+                    dumpDialogView(dlg, "debug_evo_choice.png", 1500)
+                    window.decorView.postDelayed({ dlg.dismiss() }, 2500)
+                }
+            }
+        }
+        // SOLO PARA PRUEBAS (cuenta secundaria): abre el dialogo "Cadena evolutiva y mecanicas" de una especie y vuelca su ventana a filesDir/debug_chain.png.
+        //   adb shell am start -S --user 999 -n com.example.pokegotchi/.MainActivity --es debug_chain applin
+        intent?.getStringExtra("debug_chain")?.takeIf { QaHarness.isSecondaryUser() }?.let { species ->
+            intent.removeExtra("debug_chain")
+            window.decorView.post {
+                showEvolutionAndMechanicsDialog(species)
+                lastChainDialog?.let { dumpDialogView(it, "debug_chain.png", 2000) }
+            }
+        }
+        intent?.getBooleanExtra("debug_candy", false)?.takeIf { it && QaHarness.isSecondaryUser() }?.let {
+            intent.removeExtra("debug_candy")
+            window.decorView.post { debugCandyFlow() }
+        }
+        openDungeonDumpIfRequested()
+        // SOLO PARA PRUEBAS: vuelca la cuadricula principal (con 2 Pokemon de muestra en la guarderia si esta vacia, para ver
+        // el rosa; el rojo es el de la mazmorra real y el verde el activo) a filesDir/debug_main_grid.png.
+        //   adb shell am start -n com.example.pokegotchi/.MainActivity --ez debug_grid_dump true
+        if (intent?.getBooleanExtra("debug_grid_dump", false) == true) {
+            intent.removeExtra("debug_grid_dump")
+            // --es debug_filter all|favorites: abre esa pestaña antes de volcar (por defecto, Mis Pokemon).
+            when (intent.getStringExtra("debug_filter")) { "all" -> setFilterMode(FILTER_ALL); "favorites" -> setFilterMode(FILTER_FAVORITES) }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ debugDumpMainGrid() }, 1500L)
         }
         // Retoma el avance de fondo de la mazmorra (o la espera del cooldown). Aqui y no en
         // onCreate: tocar el aviso "mazmorra parada" del widget con la app ya en recientes la
@@ -248,6 +367,9 @@ class MainActivity : AppCompatActivity() {
         // Activity (onResume sin onCreate, ej. al volver de segundo plano) esto antes NO se
         // llamaba, asi que se quedaba con el nivel de la ULTIMA vez que se abrio, aunque el
         // widget (que si se repinta solo en cada tick) ya llevase rato enseñando uno mas alto.
+        // Antes, liquidar la guarderia (XP y huevos de lo que ha pasado con la app cerrada): asi el
+        // nivel de entrenador que se pinta ya cuenta ese XP y las plazas que se abran se ven al momento.
+        try { PetState.settleNursery(this) } catch (t: Throwable) { dbg("guarderia: error al liquidar al abrir: $t") }
         showLevel()
         // Ofertas periodicas (Fase 3): NO hay popup automatico (mismo criterio que la
         // evolucion) - solo se genera en silencio si toca, y se avisa con el icono 🎁 del
@@ -265,6 +387,163 @@ class MainActivity : AppCompatActivity() {
         // mirar), aqui SI se muestra directo al abrir - es la propia gracia del huevo ("entrar a
         // descubrir que te ha salido"), y ya hubo una notificacion avisando de que tocaba mirar.
         if (!eggHatchDialogShowing && PetState.hasActiveEgg(this) && PetState.isEggReady(this)) showEggHatchDialog()
+        // Consejos de primera vez de esta pantalla (uno por apertura): la coleccion la primera vez, y despues el huevo, el regalo y
+        // las fichas de fondo cuando ocurren por primera vez.
+        window.decorView.post { TutorialTips.showPending(this, TutorialTips.Tip.MAIN, TutorialTips.Tip.EGG, TutorialTips.Tip.GIFT, TutorialTips.Tip.BACKGROUNDS, resolve = ::tipTarget) }
+        // SOLO PARA PRUEBAS: abre el tutorial en modo sandbox (sin guardar nada) en el paso N y vuelca su vista a
+        // filesDir/debug_tutorial_<N>.png (TrainerSetupActivity no esta exportada, asi que no se puede lanzar directo por adb):
+        //   adb shell am start -S -n com.example.pokegotchi/.MainActivity --ei debug_tutorial 1
+        // SOLO PRUEBAS (cuenta secundaria): barrido de interfaz (ver runUiSweep).
+        intent?.getStringExtra("debug_ui_sweep")?.takeIf { QaHarness.isSecondaryUser() }?.let { mode ->
+            intent.removeExtra("debug_ui_sweep")
+            window.decorView.postDelayed({ runUiSweep(mode) }, 1500L)
+        }
+        if (intent?.getBooleanExtra("debug_intro", false) == true) {
+            intent.removeExtra("debug_intro")
+            startActivity(Intent(this, TrainerSetupActivity::class.java)
+                .putExtra(TrainerSetupActivity.EXTRA_DEBUG_SANDBOX, true)
+                .putExtra(TrainerSetupActivity.EXTRA_DEBUG_INTRO, true))
+        }
+        if (intent?.hasExtra("debug_tutorial") == true) {
+            val step = intent.getIntExtra("debug_tutorial", 0)
+            intent.removeExtra("debug_tutorial")
+            startActivity(Intent(this, TrainerSetupActivity::class.java)
+                .putExtra(TrainerSetupActivity.EXTRA_DEBUG_SANDBOX, true)
+                .putExtra(TrainerSetupActivity.EXTRA_DEBUG_PREVIEW_STEP, step)
+                .putExtra(TrainerSetupActivity.EXTRA_DEBUG_DUMP, true))
+        }
+        // SOLO PARA PRUEBAS: muestra un consejo (clave) y vuelca su ventana a filesDir/debug_tip_<clave>_<paso>.png. Extra opcional
+        // "debug_step": el paso de la pista que se vuelca (la mazmorra vuelca su propia pantalla):
+        //   adb shell am start -S -n com.example.pokegotchi/.MainActivity --es debug_tip main --ei debug_step 2
+        intent?.getStringExtra("debug_tip")?.let { key ->
+            val stepWanted = intent.getIntExtra("debug_step", 0)
+            val intentTap = intent.getBooleanExtra("debug_tap", false)
+            val intentPick = intent.getBooleanExtra("debug_pick", false)   // ademas del toque, elige un candidato y confirma
+            intent.removeExtra("debug_tip"); intent.removeExtra("debug_step"); intent.removeExtra("debug_tap"); intent.removeExtra("debug_pick")
+            TutorialTips.Tip.values().firstOrNull { it.key == key }?.let { tip ->
+                val h = android.os.Handler(android.os.Looper.getMainLooper())
+                h.postDelayed({
+                    showTipFromDebug(tip, stepWanted)
+                    if (tip == TutorialTips.Tip.DUNGEON || tip == TutorialTips.Tip.COMPANIONS) return@postDelayed   // esa pantalla vuelca la suya
+                    h.postDelayed({
+                        val ov = TutorialTips.lastOverlay?.takeIf { it.isAttachedToWindow }
+                        ov?.debugGoTo(stepWanted)
+                        // --ez debug_tap true: toca de verdad lo resaltado (la cadena regalo -> ventana del regalo -> segunda pista).
+                        val tapped = intentTap && ov != null
+                        if (tapped) h.postDelayed({ ov?.debugTapTarget() }, 800L)
+                        if (tapped && intentPick) {
+                            h.postDelayed({ TutorialTips.lastOverlay?.takeIf { it.isAttachedToWindow }?.debugGoTo(2) }, 3300L)
+                            h.postDelayed({ ((lastOfferGrid?.getChildAt(0) as? ViewGroup)?.getChildAt(0))?.performClick() }, 3900L)
+                            h.postDelayed({ lastConfirmDialog?.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.performClick() }, 4800L)
+                        }
+                        h.postDelayed({
+                            val overlayNow = (if (tapped) TutorialTips.lastOverlay else ov)?.takeIf { it.isAttachedToWindow }
+                            val extra = listOfNotNull(lastOfferDialog?.takeIf { it.isShowing }?.window?.decorView) + TutorialTips.debugWindows
+                            if (overlayNow != null) {
+                                // Con la capa en una ventana propia hay que pintar la actividad, los dialogos y la capa en su sitio.
+                                val b = TutorialTips.debugComposite(this, window.decorView, extra, overlayNow.rootView.takeIf { it !== window.decorView })
+                                java.io.File(filesDir, "debug_tip_${key}_$stepWanted.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                                val ol = IntArray(2); overlayNow.getLocationOnScreen(ol)
+                                // Control: la capa sola sobre gris, para ver hasta donde llega el oscurecido.
+                                TutorialTips.debugComposite(this, overlayNow.rootView).let { ob ->
+                                    java.io.File(filesDir, "debug_tip_${key}_${stepWanted}_overlay.png").outputStream().use { ob.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                                    ob.recycle()
+                                }
+                                b.recycle(); dbg("consejo '$key' paso $stepWanted volcado (pantalla entera); capa ${overlayNow.width}x${overlayNow.height} en ${ol[0]},${ol[1]}; raiz ${overlayNow.rootView.width}x${overlayNow.rootView.height}")
+                            } else (TutorialTips.lastDialog?.window?.decorView)?.let { dumpViewToFile(it, "debug_tip_${key}_$stepWanted.png") }
+                        }, if (tapped && intentPick) 7500L else if (tapped) 3500L else 700L)
+                    }, 2500L)
+                }, 1500L)
+            }
+        }
+    }
+
+    private var lastDetailDialog: androidx.appcompat.app.AlertDialog? = null
+
+    private fun collectTexts(v: View?, out: MutableList<String>) {
+        if (v is TextView) out.add(v.text.toString())
+        if (v is ViewGroup) for (i in 0 until v.childCount) collectTexts(v.getChildAt(i), out)
+    }
+
+    /** SOLO PRUEBAS (cuenta secundaria; `--es debug_ui_sweep detail|detail_all|lists`): abre la ficha de CADA especie (o mide el repintado de la
+     *  lista con una coleccion enorme) y anota en el log excepciones, textos raros ("null", "NaN"...) y tiempos. Resultado: lineas "SWEEP ..." del log. */
+    private fun runUiSweep(mode: String) {
+        val log = { m: String -> DebugLog.log(this, "SWEEP $m") }
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        log("arranca '$mode' con ${PetState.ownedIndividuals(this).size} individuos")
+        if (mode == "lists") {
+            val savedSort = sortBy; val savedMode = filterMode
+            for (m in listOf(FILTER_MINE, FILTER_FAVORITES, FILTER_ALL)) for (sb in listOf("id", "level", "date", "name", "shiny")) {
+                filterMode = m; sortBy = sb
+                val t0 = System.nanoTime()
+                try { refreshRows(); adapter.notifyDataSetChanged() } catch (e: Throwable) { log("EXC lista $m/$sb: $e") }
+                log("lista $m orden=$sb: ${rows.size} filas en ${(System.nanoTime() - t0) / 1_000_000} ms")
+            }
+            for (q in listOf("a", "pi", "#25", "zzz")) {
+                searchQuery = q; filterMode = FILTER_ALL
+                val t0 = System.nanoTime(); refreshRows(); adapter.notifyDataSetChanged()
+                log("busqueda '$q': ${rows.size} filas en ${(System.nanoTime() - t0) / 1_000_000} ms")
+            }
+            searchQuery = ""; sortBy = savedSort; filterMode = savedMode; refreshRows(); adapter.notifyDataSetChanged()
+            log("fin 'lists'")
+            return
+        }
+        if (mode == "dialogs") {
+            val steps = listOf<Pair<String, () -> Unit>>(
+                "ajustes" to { showSettingsDialog() },
+                "ficha de entrenador" to { showTrainerCardDialog() },
+                "objetos de la Pokedex" to { showItemsPokedexDialog() },
+                "fondos" to { showBackgroundPickerDialog() },
+                "favorito destacado" to { showFavoriteShowcasePickerDialog() },
+                "mochila" to { showBagDialog() },
+                "selector de caramelos" to { showCandyPicker() },
+                "selector de guarderia" to { showNurseryPicker({}) },
+                "ajustes de guarderia" to { showNurserySettings({}) },
+                "guarderia (escena)" to { showNurseryDialog() },
+                "regalo" to { showOfferDialog() },
+                "debug: coleccion" to { showDebugOwnedGridDialog() },
+                "debug: añadir" to { showDebugAddGridDialog() },
+                "debug: editor" to { showDebugPokemonEditorDialog() },
+                "log" to { showDebugLogDialog() },
+                "evolucion y mecanicas" to { showEvolutionAndMechanicsDialog(PetState.currentPokemon(this)) },
+            )
+            var k = 0; var exc = 0
+            fun next() {
+                if (k >= steps.size) { log("fin 'dialogs': ${steps.size} dialogos, $exc excepciones"); return }
+                val (name, fn) = steps[k++]
+                val t0 = System.nanoTime()
+                try { fn() } catch (e: Throwable) { exc++; log("EXC dialogo '$name': $e @ ${e.stackTrace.take(3).joinToString(" < ") { "${it.fileName}:${it.lineNumber}" }}") }
+                log("dialogo '$name': ${(System.nanoTime() - t0) / 1_000_000} ms")
+                handler.postDelayed({ next() }, 700L)
+            }
+            next()
+            return
+        }
+        val list = if (mode == "detail") allMons.filter { isCurrentlyOwnedSpecies(it.name) } else allMons
+        var i = 0; var exc = 0; var weird = 0; var maxMs = 0L
+        val slow = ArrayList<String>()
+        fun step() {
+            if (i >= list.size) { log("fin '$mode': ${list.size} fichas, $exc excepciones, $weird con textos raros, la mas lenta $maxMs ms; >250ms: ${slow.take(15)}"); return }
+            val mon = list[i++]
+            val t0 = System.nanoTime()
+            try { showDetailDialog(mon, interactive = (mode == "detail")) } catch (e: Throwable) {
+                exc++; log("EXC ficha ${mon.name}: $e @ ${e.stackTrace.take(3).joinToString(" < ") { "${it.fileName}:${it.lineNumber}" }}")
+            }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            if (ms > maxMs) maxMs = ms
+            if (ms > 250) slow.add("${mon.name}=${ms}ms")
+            handler.postDelayed({
+                lastDetailDialog?.let { d ->
+                    val texts = ArrayList<String>(); collectTexts(d.window?.decorView, texts)
+                    val bad = texts.filter { it.contains("null") || it.contains("NaN") || it.contains("Infinity") || it.contains("%s") || it.contains("%d") }
+                    if (bad.isNotEmpty()) { weird++; log("TEXTO RARO ficha ${mon.name}: ${bad.take(3)}") }
+                    try { d.dismiss() } catch (_: Exception) {}
+                }
+                lastDetailDialog = null
+                step()
+            }, 40L)
+        }
+        step()
     }
 
     /** Revelacion del huevo: antes de enseñar el resultado, se ve una animacion de eclosion de
@@ -444,6 +723,11 @@ class MainActivity : AppCompatActivity() {
      *  texto desactualizado detectado por el usuario tras el cambio que hizo que normal/shiny (y
      *  distintos individuos de la misma especie) convivan de verdad en vez de pisarse. */
     private fun confirmKeepEggHatch(hatchDialog: androidx.appcompat.app.AlertDialog, species: String) {
+        // Si ya tienes a esa cria y esta explorando una mazmorra, no puede pasar a ser tu compañero activo hasta que vuelva.
+        if (DungeonState.isInParty(this, species, PetState.eggIsShiny(this))) {
+            Toast.makeText(this, "${PetState.displayLabel(species)} está en la mazmorra: no puedes quedártelo hasta que salga (o suelta el huevo)", Toast.LENGTH_LONG).show()
+            return
+        }
         val current = PetState.currentPokemon(this)
         val level = PetState.levelOf(this, PetState.loadWithDecay(this).xp, current)
         val hatchShiny = PetState.eggIsShiny(this)
@@ -482,21 +766,32 @@ class MainActivity : AppCompatActivity() {
 
     /** Aviso de "¿seguro?" antes de soltar al Pokemon del huevo: deja claro que se pierde. */
     private fun confirmReleaseEggHatch(hatchDialog: androidx.appcompat.app.AlertDialog) {
+        val candyNote = if (PetState.candiesUnlocked(this)) " A cambio recibirás 1 caramelo en la mochila 🎒." else ""
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("¿Seguro?")
-            .setMessage("Si sueltas a este Pokémon lo perderás para siempre. Tocará esperar a otro huevo desde cero.")
+            .setMessage("Si sueltas a este Pokémon lo perderás para siempre. Tocará esperar a otro huevo desde cero.$candyNote")
             .setPositiveButton("Sí, soltarlo") { _, _ ->
                 dbg("huevo: soltado (especie ${PetState.eggHatchSpecies(this)}, shiny=${PetState.eggIsShiny(this)})")
-                PetState.releaseEgg(this)
+                val gotCandy = PetState.releaseEggForCandy(this)
                 NotificationHelper.cancelEggLaid(this)
                 NotificationHelper.cancelEggHatched(this)
                 WidgetRefresh.updateWidgets(this)
-                Toast.makeText(this, "Has soltado al Pokémon. Tocará esperar a otro huevo desde cero.", Toast.LENGTH_LONG).show()
+                refreshUnlockButtons()
+                Toast.makeText(
+                    this,
+                    "Has soltado al Pokémon." + (if (gotCandy) " ¡+1 caramelo en la mochila!" else "") + " Tocará esperar a otro huevo desde cero.",
+                    Toast.LENGTH_LONG
+                ).show()
                 hatchDialog.dismiss()
             }
             .setNegativeButton("Cancelar", null)
             .show()
     }
+
+    /** SOLO PRUEBAS: el ultimo dialogo de regalo abierto (para volcar la pantalla entera con su pista). */
+    private var lastOfferDialog: androidx.appcompat.app.AlertDialog? = null
+    private var lastOfferGrid: ViewGroup? = null
+    private var lastConfirmDialog: androidx.appcompat.app.AlertDialog? = null
 
     private fun refreshOfferBadge() {
         val hasOffer = PetState.currentOffer(this).isNotEmpty()
@@ -664,7 +959,7 @@ class MainActivity : AppCompatActivity() {
      * [previewOffer] != null = VISTA PREVIA (solo para ver el aspecto, ver debugDemoOffer): usa esa
      * lista en vez de la oferta real y no guarda, elige ni descarta nada.
      */
-    private fun showOfferDialog(previewOffer: List<PetState.OfferMon>? = null) {
+    private fun showOfferDialog(previewOffer: List<PetState.OfferMon>? = null, forceTip: Boolean = false) {
         val preview = previewOffer != null
         val offer = previewOffer ?: PetState.currentOffer(this)
         if (offer.isEmpty()) return
@@ -696,6 +991,9 @@ class MainActivity : AppCompatActivity() {
         })
 
         lateinit var dialog: androidx.appcompat.app.AlertDialog
+        // Contenedor de las filas de candidatos (lo resalta la pista del regalo).
+        val gridBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(gridBox)
         // Filas manuales (en vez de GridLayout) de hasta 3, cada fila con ancho WRAP_CONTENT y
         // centrada: asi la ULTIMA fila, si queda incompleta (aqui: 2 de 5), se centra en vez de
         // quedar pegada a la izquierda con un hueco a la derecha.
@@ -754,7 +1052,7 @@ class MainActivity : AppCompatActivity() {
                         return@setOnClickListener
                     }
                     val monLabel = PetState.displayLabel(mon.name) + if (mon.shiny) " ✨ shiny" else ""
-                    androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                    lastConfirmDialog = androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
                         .setTitle(monLabel)
                         .setMessage("¿Seguro que quieres elegir a $monLabel? Se añadirá a tu Pokédex y el resto de la oferta se perderá.")
                         .setPositiveButton("Elegir") { _, _ ->
@@ -766,13 +1064,15 @@ class MainActivity : AppCompatActivity() {
                             refreshRows()
                             adapter.notifyDataSetChanged()
                             Toast.makeText(this@MainActivity, "¡$monLabel añadido a tu Pokédex!", Toast.LENGTH_LONG).show()
+                            // Si la pista del regalo esperaba esta eleccion, continua (sin haber cerrado nada: la eleccion la ha hecho el jugador).
+                            TutorialTips.notifyEvent("gift_picked", PetState.displayLabel(mon.name).replaceFirstChar { it.uppercase() })
                         }
                         .setNegativeButton("Cancelar", null)
                         .show()
                 }
                 rowLl.addView(cellFrame)
             }
-            content.addView(rowLl)
+            gridBox.addView(rowLl)
         }
 
         val buttonRow = LinearLayout(this).apply {
@@ -808,6 +1108,20 @@ class MainActivity : AppCompatActivity() {
         }
         btnLater.setOnClickListener { dialog.dismiss() }
         dialog.show()
+        lastOfferDialog = dialog
+        lastOfferGrid = gridBox
+        // Pista DENTRO de la ventana del regalo (se llega aqui tocando el 🎁 que resalta la pista anterior): enseña las posibilidades.
+        // Si se abrio sin haber visto la pista del 🎁, esa ya no hace falta.
+        if (!preview || forceTip) {
+            val offerTargets = { id: String -> when (id) { "offer_grid" -> gridBox; "offer_buttons" -> buttonRow; else -> tipTarget(id) } }
+            // Los nombres de las opciones que de verdad le han tocado (en el dialogo salen solo los sprites).
+            val offerNames = offer.map { PetState.displayLabel(it.name) }
+            if (forceTip) TutorialTips.show(this, TutorialTips.Tip.GIFT_PICK, force = true, onScreen = true, resolve = offerTargets, textArgs = offerNames)
+            else {
+                TutorialTips.markSeen(this, TutorialTips.Tip.GIFT)
+                TutorialTips.showPending(this, TutorialTips.Tip.GIFT_PICK, onScreen = true, resolve = offerTargets, textArgs = offerNames)
+            }
+        }
         // Vista previa: vuelca SOLO la vista del propio dialogo a PNG (sin capturar la pantalla del
         // movil) cuando ya han cargado los sprites - la forma de comprobar el aspecto desde adb.
         if (preview) frame.postDelayed({
@@ -829,13 +1143,21 @@ class MainActivity : AppCompatActivity() {
      * activo del widget, mismo motivo que pendingEvolutionFor (bug real: evolucionar un shiny
      * desde su ficha migraba las stats del individuo normal en su lugar).
      */
-    private fun doEvolve(fromName: String, opt: PetState.EvoOption, shiny: Boolean) {
+    private fun doEvolve(fromName: String, opt: PetState.EvoOption, shiny: Boolean, onEvolved: (() -> Unit)? = null) {
         // Resuelto UNA VEZ aqui, antes de preparar nada: normalmente es opt.name/opt.id tal cual,
         // salvo el sorteo raro de Ursaring -> Ursaluna Luna Carmesi (ver
         // PetState.resolveEvolutionTarget) - asi el sprite/grito que se descarga y lo que
         // finalmente se muestra ya son consistentes desde el principio, sin tener que "corregir"
         // nada a medias.
         val (toName, toId) = PetState.resolveEvolutionTarget(opt.name, opt.id)
+        // Si ya tienes a la especie de destino (solo puede haber un individuo vivo por especie y variante), el que evoluciona se queda y
+        // sustituye al que tenias: es el comportamiento acordado (el usuario: "no puedes tener dos Charizard: el Charmeleon que evoluciona
+        // pasa a ser tu Charizard"), asi que NO se pregunta; la Poke Ball del selector de ramas ya avisa de cuales tienes.
+        startEvolution(fromName, opt, toName, toId, shiny, onEvolved)
+    }
+
+    /** Parte de [doEvolve] ya sin dudas: prepara los recursos y lanza la animacion; al acabar migra el estado y llama a [onEvolved]. */
+    private fun startEvolution(fromName: String, opt: PetState.EvoOption, toName: String, toId: Int, shiny: Boolean, onEvolved: (() -> Unit)? = null) {
         // Sin Toast de "preparando": el sprite viene de assets/localsprites (sin red) casi
         // siempre, y hasta cuando de verdad hace falta red tarda tan poco que avisar de ello
         // sobra - pedido explicito del usuario.
@@ -866,15 +1188,26 @@ class MainActivity : AppCompatActivity() {
                         // Nv.28 al instante).
                         PetState.loadWithDecay(this)
                         dbg("evolucion: $fromName -> $toName (metodo=${opt.method}, nivel pedido=${opt.level}, shiny=$shiny)")
+                        // Si estaba en la guarderia o en el grupo de la mazmorra, se queda ahi y el activo no cambia.
+                        val inNursery = PetState.isInNursery(this, fromName, shiny) && !DungeonState.isInParty(this, toName, shiny)
+                        val inPlace = PetState.evolvesInPlace(this, fromName, toName, shiny)
                         PetState.evolveTo(this, fromName, toName, toId, shiny)
-                        selected = toName
-                        currentGen = allMons.find { it.name == selected }?.gen ?: currentGen
+                        if (!inPlace) {
+                            selected = toName
+                            currentGen = allMons.find { it.name == selected }?.gen ?: currentGen
+                        }
                         refreshRows()
                         buildGenRow()
                         adapter.notifyDataSetChanged()
                         showLevel()
                         WidgetRefresh.updateWidgets(this)
-                        Toast.makeText(this, "¡Felicidades! Ahora tienes a ${PetState.displayLabel(toName)}", Toast.LENGTH_LONG).show()
+                        val label = PetState.displayLabel(toName)
+                        Toast.makeText(this, when {
+                            inNursery -> "¡Felicidades! $label ha evolucionado en la guardería"
+                            inPlace -> "¡Felicidades! $label ha evolucionado en la mazmorra"
+                            else -> "¡Felicidades! Ahora tienes a $label"
+                        }, Toast.LENGTH_LONG).show()
+                        onEvolved?.invoke()
                     }
                 } else {
                     cry?.release()
@@ -1416,6 +1749,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (newSort != sortBy) {
                 sortBy = newSort
+                UiPrefs.putString(this, UiPrefs.MAIN_SORT, newSort)
                 refreshRows()
                 adapter.notifyDataSetChanged()
             }
@@ -1978,6 +2312,7 @@ class MainActivity : AppCompatActivity() {
     // simple (no hay nada que proteger de verdad, es un telefono personal) - solo evita que
     // alguien que coja el telefono y toque "Ajustes" se tropiece con esto sin querer.
     private val DEBUG_PASSWORD = "27021996"
+    private var debugMenuDialog: androidx.appcompat.app.AlertDialog? = null
 
     private fun promptDebugPassword() {
         val input = EditText(this).apply {
@@ -2011,7 +2346,10 @@ class MainActivity : AppCompatActivity() {
             "⏱️ Simular paso del tiempo" to { showDebugTimeSkipDialog() },
             "🥚 Forzar fase del huevo" to { showDebugEggStageDialog() },
             "✏️ Editar / añadir Pokémon" to { showDebugPokemonEditorDialog() },
-            "📊 Simulador de mazmorra" to { showDungeonBalanceSimulatorDialog() }
+            "📊 Simulador de mazmorra" to { showDungeonBalanceSimulatorDialog() },
+            "🎓 Tutorial completo (sin guardar nada)" to { startActivity(Intent(this, TrainerSetupActivity::class.java).putExtra(TrainerSetupActivity.EXTRA_DEBUG_SANDBOX, true)) },
+            "🎓 Solo los pasos del tutorial" to { startActivity(Intent(this, TrainerSetupActivity::class.java).putExtra(TrainerSetupActivity.EXTRA_DEBUG_SANDBOX, true).putExtra(TrainerSetupActivity.EXTRA_DEBUG_PREVIEW_STEP, 0)) },
+            "💡 Consejos de primera vez" to { showDebugTipsDialog() }
         )
         items.forEach { (label, action) ->
             root.addView(Button(this).apply {
@@ -2019,11 +2357,81 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { action() }
             })
         }
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        debugMenuDialog = androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Menú debug")
             .setView(root)
             .setPositiveButton("Cerrar", null)
             .show()
+    }
+
+    /** Vistas de esta pantalla que resaltan las pistas sobre la interfaz (ver TutorialTips.stepsFor); null = sin hueco. */
+    private fun tipTarget(id: String): View? = when (id) {
+        "tab_mine" -> findViewById(R.id.tab_mine)
+        "tab_favorites" -> findViewById(R.id.tab_favorites)
+        "tab_all" -> findViewById(R.id.tab_all)
+        "btn_sort" -> findViewById(R.id.btn_sort)
+        "tv_trainer_level" -> findViewById(R.id.tv_trainer_level)
+        "btn_dungeon" -> findViewById(R.id.btn_dungeon)
+        "btn_bag" -> findViewById(R.id.btn_bag)
+        "btn_offer" -> findViewById(R.id.btn_offer)
+        else -> null
+    }
+
+    /** Enseña [tip] a la fuerza desde el menu Debug, en la pantalla a la que pertenece (la mazmorra y la guarderia abren la suya). */
+    private fun showTipFromDebug(tip: TutorialTips.Tip, step: Int = 0) {
+        when (tip) {
+            TutorialTips.Tip.DUNGEON, TutorialTips.Tip.COMPANIONS -> startActivity(
+                Intent(this, DungeonActivity::class.java).putExtra(DungeonActivity.EXTRA_FORCE_TIP, tip.key).putExtra(DungeonActivity.EXTRA_TIP_STEP, step)
+            )
+            TutorialTips.Tip.NURSERY -> showNurseryDialog(forceTip = true)
+            TutorialTips.Tip.GIFT_PICK -> showOfferDialog(debugDemoOffer(), forceTip = true)
+            else -> window.decorView.postDelayed({ TutorialTips.show(this, tip, force = true, resolve = ::tipTarget) }, 250L)
+        }
+    }
+
+    /** SOLO PRUEBAS: vuelca [view] (con todo lo que tenga dibujado, p. ej. una pista) a filesDir/[name]. */
+    private fun dumpViewToFile(view: View, name: String) {
+        try {
+            val b = Bitmap.createBitmap(view.width.coerceAtLeast(1), view.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+            android.graphics.Canvas(b).apply { drawColor(Color.parseColor("#303030")); view.draw(this) }
+            java.io.File(filesDir, name).outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            b.recycle()
+            dbg("vista volcada a $name")
+        } catch (e: Exception) { dbg("volcado de $name fallo: $e") }
+    }
+
+    /** Menu Debug: lista de los consejos de primera vez (si cada uno ya se ha visto), para verlos uno a uno o dejarlos todos
+     *  sin ver otra vez (se vuelven a enseñar la proxima vez que toque). */
+    private fun showDebugTipsDialog() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        lateinit var dlg: androidx.appcompat.app.AlertDialog
+        TutorialTips.Tip.values().forEach { tip ->
+            root.addView(Button(this).apply {
+                text = "${tip.emoji} ${tip.title}  ·  " + if (TutorialTips.seen(this@MainActivity, tip)) "visto" else "sin ver"
+                isAllCaps = false
+                setOnClickListener { dlg.dismiss(); debugMenuDialog?.dismiss(); showTipFromDebug(tip) }
+            })
+        }
+        root.addView(Button(this).apply {
+            text = "↺ Dejar todos sin ver"
+            isAllCaps = false
+            setOnClickListener {
+                TutorialTips.resetAll(this@MainActivity)
+                Toast.makeText(this@MainActivity, "Consejos restablecidos: saldrán de nuevo cuando toque", Toast.LENGTH_LONG).show()
+                dlg.dismiss()
+            }
+        })
+        dlg = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Consejos de primera vez")
+            .setView(ScrollView(this).apply { addView(root) })
+            .setPositiveButton("Cerrar", null)
+            .create()
+        dlg.show()
     }
 
     /** Simulador de balance de la mazmorra - pedido explicito del usuario: "añadir algun tipo de
@@ -2814,8 +3222,8 @@ class MainActivity : AppCompatActivity() {
         val tokens = PetState.bgTokensAvailable(this)
 
         grid.addView(TextView(this).apply {
-            text = if (tokens > 0) "Puedes desbloquear $tokens fondo(s) más ahora mismo (cada 5 niveles de entrenador, 1 a tu elección)"
-                else "Sube de nivel a tus Pokémon para desbloquear más fondos (cada 5 niveles de entrenador, 1 a tu elección)"
+            text = if (tokens > 0) "Puedes desbloquear $tokens fondo(s) más ahora mismo (${PetState.bgTokenLabelEvery()}, 1 a tu elección)"
+                else "Sube de nivel a tus Pokémon para desbloquear más fondos (${PetState.bgTokenLabelEvery()}, 1 a tu elección)"
             textSize = 12f
             setTextColor(Color.parseColor("#666666"))
             setPadding(0, 0, 0, dp(2))
@@ -3178,6 +3586,1094 @@ class MainActivity : AppCompatActivity() {
         tvTrainerLevel.text = "Entrenador Nv.${PetState.trainerLevel(this)}$bgSuffix"
         trainerLevelBar.max = 1000
         trainerLevelBar.progress = (PetState.trainerProgress(this) * 1000).toInt()
+        announceTrainerLevelUp()
+        refreshUnlockButtons()
+        if (tokens > 0) TutorialTips.showPending(this, TutorialTips.Tip.BACKGROUNDS, resolve = ::tipTarget)
+    }
+
+    /** Color de texto secundario del tema del dialogo (en el tema oscuro, un gris claro): un gris
+     *  fijo como #666 se pierde sobre el fondo oscuro. */
+    private fun dialogSecondaryTextColor(): Int {
+        val a = theme.obtainStyledAttributes(intArrayOf(android.R.attr.textColorSecondary))
+        return try { a.getColor(0, Color.parseColor("#B0B0B0")) } finally { a.recycle() }
+    }
+
+    // ==================== MOCHILA Y CARAMELOS ====================
+    // Se abre con el boton 🎒 de la cabecera (visible desde el nivel de entrenador que la desbloquea).
+    // De momento solo guarda caramelos (se consiguen soltando un huevo); un caramelo da XP a cualquier
+    // Pokemon tuyo (ver PetState.useCandy). Elegir a quien se lo das es el selector de showCandyPicker.
+
+    private fun showBagDialog(): androidx.appcompat.app.AlertDialog {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val candies = PetState.candyCount(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val icon = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(DungeonSpriteRepository.itemIcon(this@MainActivity, "EXPCANDYM"))
+        }
+        head.addView(icon)
+        head.addView(TextView(this).apply {
+            text = "Caramelos: $candies"
+            textSize = 20f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(12), 0, 0, 0)
+        })
+        root.addView(head)
+        root.addView(TextView(this).apply {
+            text = "Cada caramelo da XP a un Pokémon tuyo: un ${"%.0f".format(100 * PetState.candyPctOfNextLevel())} % de lo que le cuesta su siguiente nivel (mínimo ${PetState.candyMinXp().toInt()} XP), " +
+                "así que sirve igual a cualquier nivel. Los consigues soltando un huevo."
+            textSize = 13f
+            setTextColor(dialogSecondaryTextColor())
+            setPadding(0, dp(8), 0, dp(8))
+        })
+        root.addView(TextView(this).apply {
+            text = "♻️ Un Pokémon al nivel 100 ya no puede subir: su XP sobrante se guarda y cada ${PetState.overflowXpPerCandy().toInt()} XP se convierte en un caramelo. " +
+                "Ahora: ${PetState.overflowXp(this@MainActivity).toInt()} / ${PetState.overflowXpPerCandy().toInt()} para el próximo."
+            textSize = 12.5f
+            setTextColor(dialogSecondaryTextColor())
+            setPadding(0, 0, 0, dp(12))
+        })
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("🎒 Mochila")
+            .setView(ScrollView(this).apply { addView(root) })
+            .setPositiveButton("Cerrar", null)
+            .create()
+        root.addView(Button(this).apply {
+            text = if (candies > 0) "Dar un caramelo a un Pokémon" else "Aún no tienes caramelos"
+            isAllCaps = false
+            isEnabled = candies > 0
+            setOnClickListener { dialog.dismiss(); showCandyPicker() }
+        })
+        dialog.show()
+        return dialog
+    }
+
+    /** Una fila del selector de Pokémon ([showMonPicker]): [subtitle] es la segunda línea; con
+     *  [enabled] = false se ve en gris y, al tocarla, solo enseña [blockedToast] (si lo hay). */
+    private class PickRow(
+        val name: String, val shiny: Boolean, val level: Int, val subtitle: String,
+        val enabled: Boolean = true, val blockedToast: String? = null
+    )
+
+    /** Lo que puede hacer quien reacciona a una elección: repintar la lista o cerrarla. */
+    private class PickerHandle(val reload: () -> Unit, val dismiss: () -> Unit)
+
+    /** Selector genérico de Pokémon tuyos (lista con sprite + nombre + [PickRow.subtitle]).
+     *  [load] da las filas YA ordenadas; [onChoose] se llama al tocar una fila activa. */
+    private fun showMonPicker(
+        title: String,
+        load: () -> List<PickRow>,
+        onChoose: (PickRow, PickerHandle) -> Unit,
+        previewDump: String? = null
+    ): androidx.appcompat.app.AlertDialog {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        var rows = load()
+        val sprites = android.util.LruCache<String, Bitmap>(80)
+        val loader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        lateinit var dialog: androidx.appcompat.app.AlertDialog
+        val rv = RecyclerView(this)
+        val adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount() = rows.size
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val row = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(8), dp(4), dp(8), dp(4))
+                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    isClickable = true
+                    background = android.util.TypedValue().let { tv ->
+                        theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+                        ContextCompat.getDrawable(this@MainActivity, tv.resourceId)
+                    }
+                }
+                row.addView(ImageView(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                })
+                row.addView(TextView(this@MainActivity).apply {
+                    tag = "label"
+                    textSize = 15f
+                    setPadding(dp(12), 0, 0, 0)
+                })
+                return object : RecyclerView.ViewHolder(row) {}
+            }
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                val r = rows[position]
+                val row = holder.itemView as LinearLayout
+                val img = row.getChildAt(0) as ImageView
+                val label = row.getChildAt(1) as TextView
+                label.text = (PetState.displayLabel(r.name).replaceFirstChar { it.uppercase() }) + (if (r.shiny) " ✨" else "") +
+                    "\n" + r.subtitle
+                row.alpha = if (r.enabled) 1f else 0.45f
+                val key = "${r.name}|${r.shiny}"
+                img.tag = key
+                img.setImageBitmap(sprites.get(key))
+                if (sprites.get(key) == null) {
+                    loader.execute {
+                        val bmp = SpriteRepository.localFirstFrameScaled(this@MainActivity, r.name, r.shiny, PetState.spriteScaleMode(this@MainActivity))
+                        if (bmp != null) {
+                            sprites.put(key, bmp)
+                            runOnUiThread { if (img.tag == key) img.setImageBitmap(bmp) }
+                        }
+                    }
+                }
+                row.setOnClickListener {
+                    if (!r.enabled) {
+                        r.blockedToast?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_SHORT).show() }
+                        return@setOnClickListener
+                    }
+                    onChoose(r, PickerHandle(
+                        reload = { rows = load(); notifyDataSetChanged() },
+                        dismiss = { dialog.dismiss() }
+                    ))
+                }
+            }
+        }
+        rv.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+        rv.adapter = adapter
+        rv.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(380))
+        dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(rv)
+            .setNegativeButton("Cerrar", null)
+            .create()
+        dialog.setOnDismissListener { loader.shutdown(); refreshUnlockButtons() }
+        dialog.show()
+        previewDump?.let { dumpDialogView(dialog, it, 2500) }
+        return dialog
+    }
+
+    /** SOLO PARA PRUEBAS: vuelca la vista del propio [dialog] a filesDir/[fileName] pasados [delayMs]
+     *  (sin capturar la pantalla del movil) - la forma de revisar el aspecto desde adb. */
+    private fun dumpDialogView(dialog: android.app.Dialog, fileName: String, delayMs: Long) {
+        val decor = dialog.window?.decorView ?: return
+        decor.postDelayed({
+            try {
+                val bmp = Bitmap.createBitmap(decor.width.coerceAtLeast(1), decor.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(bmp).apply { drawColor(Color.WHITE); decor.draw(this) }
+                java.io.File(filesDir, fileName).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bmp.recycle()
+                dbg("vista previa volcada a $fileName")
+            } catch (e: Exception) { dbg("volcado de $fileName fallo: $e") }
+        }, delayMs)
+    }
+
+    /** Lista de tus Pokémon (de menor a mayor nivel) para elegir a quien le das UN caramelo. Al
+     *  elegir se gasta el caramelo y la lista se refresca (se puede seguir dando hasta que se acaben). */
+    private fun showCandyPicker(): androidx.appcompat.app.AlertDialog {
+        lastCandyPicker = showMonPicker(
+            "¿A quién le das el caramelo?",
+            load = {
+                PetState.ownedIndividuals(this).mapNotNull { (n, s) ->
+                    val lvl = PetState.levelForPokemon(this, n, s) ?: return@mapNotNull null
+                    val xp = PetState.rawStats(this, n, s)?.xp ?: 0f
+                    val gain = PetState.candyXpFor(this, n, xp) ?: return@mapNotNull null   // nivel 100: no sube
+                    PickRow(n, s, lvl, "Nv $lvl · +${gain.toInt().coerceAtLeast(1)} XP")
+                }.sortedWith(compareBy({ it.level }, { it.name }))
+            },
+            onChoose = { r, picker ->
+                fun finish(use: PetState.CandyUse?) {
+                    if (use == null) {
+                        Toast.makeText(this, "No se ha podido usar el caramelo", Toast.LENGTH_SHORT).show()
+                    } else {
+                        dbg("mochila: ${if (use.used > 1) "${use.used} caramelos" else "caramelo"} a ${r.name}${if (r.shiny) " (shiny)" else ""} +${use.xp.toInt()} XP, nivel ${r.level} -> ${use.newLevel}")
+                        val name = PetState.displayLabel(r.name).replaceFirstChar { it.uppercase() }
+                        Toast.makeText(
+                            this,
+                            "$name: " + (if (use.used > 1) "${use.used} caramelos · " else "") + "+${use.xp.toInt().coerceAtLeast(1)} XP" +
+                                (if (use.leveledUp) " · ¡nivel ${use.newLevel}!" else ""),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        if (use.leveledUp) SoundManager.playLevelUp(this)
+                        WidgetRefresh.updateWidgets(this)
+                        showLevel()
+                        if (PetState.candyCount(this) <= 0) picker.dismiss() else picker.reload()
+                    }
+                }
+                // Con mas de un caramelo (y si a este Pokemon le sirve mas de uno) se pregunta cuantos; con uno solo, directo como siempre.
+                if ((PetState.candyPlan(this, r.name, r.shiny, PetState.candyCount(this))?.used ?: 0) > 1) showCandyAmountDialog(r) { finish(it) }
+                else finish(PetState.useCandy(this, r.name, r.shiny))
+            }
+        )
+        return lastCandyPicker!!
+    }
+
+    /** Barra de nivel de la vista previa de los caramelos: lo que ya lleva en este nivel (verde oscuro) y, encima, lo que ganaria (verde claro). */
+    private class CandyBarView(context: android.content.Context) : View(context) {
+        var before = 0f
+        var after = 0f
+        private val bg = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3A3646.toInt() }
+        private val gain = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF81C784.toInt() }
+        private val own = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2E7D32.toInt() }
+        private val clip = android.graphics.Path()
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val w = width.toFloat(); val h = height.toFloat(); val r = h / 2f
+            clip.reset(); clip.addRoundRect(android.graphics.RectF(0f, 0f, w, h), r, r, android.graphics.Path.Direction.CW)
+            canvas.save(); canvas.clipPath(clip)
+            canvas.drawRect(0f, 0f, w, h, bg)
+            canvas.drawRect(0f, 0f, w * after.coerceIn(0f, 1f), h, gain)
+            canvas.drawRect(0f, 0f, w * before.coerceIn(0f, 1f), h, own)
+            canvas.restore()
+        }
+    }
+
+    /** SOLO PRUEBAS: el ultimo dialogo de cantidad de caramelos abierto (ver [debugCandyFlow]). */
+    private var lastCandyAmountDialog: androidx.appcompat.app.AlertDialog? = null
+
+    /** Pregunta cuantos caramelos dar a [row] (por defecto 1; botones - y + y una cantidad escrita) y ensena, antes de confirmar, el nivel de
+     *  ahora, el que tendria y la barra de como quedaria. El maximo es lo que haya o lo que haga falta para llegar al nivel 100 (el resto no
+     *  se gastaria). [onConfirm] recibe el resultado de [PetState.useCandies]. */
+    private fun showCandyAmountDialog(row: PickRow, onConfirm: (PetState.CandyUse?) -> Unit) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val have = PetState.candyCount(this)
+        val maxUseful = (PetState.candyPlan(this, row.name, row.shiny, have)?.used ?: 0).coerceAtLeast(1)
+        var amount = 1
+        val label = PetState.displayLabel(row.name).replaceFirstChar { it.uppercase() } + (if (row.shiny) " ✨" else "")
+        lateinit var dialog: androidx.appcompat.app.AlertDialog
+        val secondary = dialogSecondaryTextColor()
+
+        val levels = TextView(this).apply { textSize = 22f; setTypeface(typeface, Typeface.BOLD); gravity = Gravity.CENTER; tag = "candy_levels" }
+        val levelNote = TextView(this).apply { textSize = 13f; gravity = Gravity.CENTER; setTextColor(secondary); tag = "candy_levels_note" }
+        val bar = CandyBarView(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(14)).apply { topMargin = dp(10) } }
+        val xpLine = TextView(this).apply { textSize = 12.5f; gravity = Gravity.CENTER; setTextColor(secondary); setPadding(0, dp(8), 0, 0); tag = "candy_xp_line" }
+        val input = EditText(this).apply {
+            setText("1"); gravity = Gravity.CENTER; textSize = 20f; setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            layoutParams = LinearLayout.LayoutParams(dp(84), LinearLayout.LayoutParams.WRAP_CONTENT)
+            tag = "candy_amount"
+        }
+        var updating = false
+        fun render() {
+            val plan = PetState.candyPlan(this, row.name, row.shiny, amount) ?: return
+            levels.text = "Nv ${plan.levelBefore}  →  Nv ${plan.levelAfter}"
+            val gained = plan.levelAfter - plan.levelBefore
+            levelNote.text = when {
+                plan.levelAfter >= 100 -> "Llega al nivel máximo" + if (gained > 0) " · sube $gained ${if (gained == 1) "nivel" else "niveles"}" else ""
+                gained > 0 -> "Sube $gained ${if (gained == 1) "nivel" else "niveles"}"
+                else -> "No sube de nivel"
+            }
+            // Si no cambia de nivel se ve lo que ya llevaba (oscuro) y lo que ganaria (claro); si sube, solo como quedaria en el nivel nuevo.
+            bar.before = if (gained == 0) plan.progressBefore else 0f
+            bar.after = plan.progressAfter
+            bar.invalidate()
+            xpLine.text = "+${plan.xpGained.toInt().coerceAtLeast(1)} XP · usas ${plan.used} de $have · te ${if (have - plan.used == 1) "queda" else "quedan"} ${have - plan.used}"
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.text = if (plan.used == 1) "Dar 1 caramelo" else "Dar ${plan.used} caramelos"
+        }
+        fun setAmount(v: Int, fromText: Boolean = false) {
+            amount = v.coerceIn(1, maxUseful)
+            if (!fromText || input.text.toString() != amount.toString()) {
+                updating = true; input.setText(amount.toString()); input.setSelection(input.text.length); updating = false
+            }
+            render()
+        }
+        input.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: android.text.Editable?) {
+                if (updating) return
+                val typed = e?.toString()?.toIntOrNull()
+                if (typed == null) { amount = 1; render(); return }   // vacio: se cuenta como 1 mientras escribe (no se reescribe el campo)
+                setAmount(typed, fromText = true)
+            }
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+        })
+        fun stepButton(text: String, tag_: String, delta: Int) = Button(this).apply {
+            this.text = text; textSize = 20f; isAllCaps = false; tag = tag_
+            layoutParams = LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(6); marginEnd = dp(6) }
+            setOnClickListener { setAmount(amount + delta) }
+        }
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            addView(stepButton("−", "candy_minus", -1))
+            addView(input)
+            addView(stepButton("+", "candy_plus", +1))
+            addView(Button(this@MainActivity).apply {
+                text = "Máx."; isAllCaps = false; tag = "candy_max"
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(10) }
+                setOnClickListener { setAmount(maxUseful) }
+            })
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(14), dp(22), dp(6))
+            addView(TextView(this@MainActivity).apply {
+                text = "Tienes $have caramelos" + if (maxUseful < have) " · a $label solo le sirven $maxUseful (llega al nivel 100)" else ""
+                textSize = 13f; setTextColor(secondary); gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(10))
+            })
+            addView(controls)
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(0, dp(16), 0, 0)
+                addView(levels); addView(levelNote); addView(bar); addView(xpLine)
+            })
+        }
+        dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Caramelos para $label")
+            .setView(root)
+            .setPositiveButton("Dar", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        lastCandyAmountDialog = dialog
+        dialog.setOnShowListener {
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val use = PetState.useCandies(this, row.name, row.shiny, amount)
+                dialog.dismiss()
+                onConfirm(use)
+            }
+            render()
+        }
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
+        dialog.show()
+    }
+    /** SOLO PRUEBAS: el ultimo selector de caramelos abierto (ver [debugCandyFlow]). */
+    private var lastCandyPicker: androidx.appcompat.app.AlertDialog? = null
+
+    /** SOLO PRUEBAS (cuenta secundaria): recorre el camino REAL de la interfaz de los caramelos - mochila, boton "Dar un caramelo", selector y
+     *  toque en las primeras filas - llamando a performClick de las propias vistas (no se inyecta ningun toque en el movil), vuelca cada paso a
+     *  filesDir/debug_candy_*.png y deja en el log lo que pasa. Al terminar devuelve los caramelos y la XP a como estaban.
+     *    adb shell am start -S --user 999 -n com.example.pokegotchi/.MainActivity --ez debug_candy true */
+    private fun debugCandyFlow() {
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        val sp = getSharedPreferences("pokegotchi_state", MODE_PRIVATE)
+        val candiesBefore = PetState.candyCount(this)
+        val xpBefore = PetState.ownedIndividuals(this).associateWith { (n, s) -> PetState.rawStats(this, n, s)?.xp ?: 0f }
+        PetState.addCandies(this, 5)
+        // El primero de la lista del selector (menor nivel, luego nombre) con algo de XP, para ver la barra de dos tonos (lo que llevaba + lo que ganaria).
+        PetState.ownedIndividuals(this).mapNotNull { (n, s) -> PetState.levelForPokemon(this, n, s)?.takeIf { it < 100 }?.let { Triple(n, s, it) } }
+            .minWithOrNull(compareBy({ it.third }, { it.first }))?.let { PetState.debugSetIndividualStats(this, it.first, it.second, xp = 3f) }
+        dbg("caramelos (interfaz): $candiesBefore -> ${PetState.candyCount(this)} caramelos para la prueba; ${xpBefore.size} Pokemon")
+        fun findView(v: View, match: (View) -> Boolean): View? {
+            if (match(v)) return v
+            if (v is ViewGroup) for (i in 0 until v.childCount) findView(v.getChildAt(i), match)?.let { return it }
+            return null
+        }
+        val bag = showBagDialog()
+        dumpDialogView(bag, "debug_candy_bag.png", 800)
+        h.postDelayed({
+            val btn = bag.window?.decorView?.let { dv -> findView(dv) { it is Button && it.text.toString().startsWith("Dar un caramelo") } }
+            dbg("caramelos (interfaz): boton de la mochila ${if (btn != null) "encontrado" else "NO encontrado"}")
+            btn?.performClick()
+        }, 1200)
+        h.postDelayed({
+            val picker = lastCandyPicker
+            if (picker == null || !picker.isShowing) { dbg("caramelos (interfaz): el selector NO se abrio"); return@postDelayed }
+            val rv = picker.window?.decorView?.let { dv -> findView(dv) { it is RecyclerView } } as? RecyclerView
+            dbg("caramelos (interfaz): selector abierto con ${rv?.adapter?.itemCount} Pokemon")
+            dumpDialogView(picker, "debug_candy_picker0.png", 300)
+            // 1) toque en la primera fila: con 5 caramelos se abre el dialogo de cantidad (por defecto 1)
+            h.postDelayed({
+                val vh = rv?.findViewHolderForAdapterPosition(0)
+                vh?.itemView?.performClick()
+                dbg("caramelos (interfaz): toque en la primera fila ${if (vh != null) "hecho" else "SIN fila"}; dialogo de cantidad ${if (lastCandyAmountDialog?.isShowing == true) "abierto" else "NO abierto"}")
+            }, 1200L)
+            h.postDelayed({ lastCandyAmountDialog?.let { dumpDialogView(it, "debug_candy_amount1.png", 100) } }, 2000L)
+            // 2) +, + (3 caramelos): la vista previa cambia
+            h.postDelayed({
+                val dv = lastCandyAmountDialog?.window?.decorView
+                val plus = dv?.let { findView(it) { v -> v.tag == "candy_plus" } }
+                plus?.performClick(); plus?.performClick()
+                val amount = (dv?.let { findView(it) { v -> v.tag == "candy_amount" } } as? EditText)?.text
+                val line = (dv?.let { findView(it) { v -> v.tag == "candy_xp_line" } } as? TextView)?.text
+                val lv = (dv?.let { findView(it) { v -> v.tag == "candy_levels" } } as? TextView)?.text
+                dbg("caramelos (interfaz): tras + + la cantidad es '$amount' | $lv | $line")
+            }, 2600L)
+            h.postDelayed({ lastCandyAmountDialog?.let { dumpDialogView(it, "debug_candy_amount3.png", 100) } }, 3300L)
+            // 3) escribir una cantidad concreta (4) y un pasado de maximo (99 -> se queda en los 5 que hay)
+            h.postDelayed({
+                val dv = lastCandyAmountDialog?.window?.decorView
+                val input = dv?.let { findView(it) { v -> v.tag == "candy_amount" } } as? EditText
+                input?.setText("99")
+                dbg("caramelos (interfaz): escribir 99 -> '${input?.text}'")
+                input?.setText("4")
+                dbg("caramelos (interfaz): escribir 4 -> '${input?.text}'")
+            }, 3800L)
+            // 4) confirmar con el boton "Dar"
+            h.postDelayed({
+                val btn = lastCandyAmountDialog?.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+                dbg("caramelos (interfaz): boton '${btn?.text}' (caramelos antes=${PetState.candyCount(this)})")
+                btn?.performClick()
+                dbg("caramelos (interfaz): tras confirmar quedan ${PetState.candyCount(this)}")
+            }, 4500L)
+            dumpDialogView(picker, "debug_candy_picker1.png", 5600)
+        }, 2600)
+        h.postDelayed({
+            // devolver todo como estaba
+            var restored = 0
+            for ((m, xp) in xpBefore) if ((PetState.rawStats(this, m.first, m.second)?.xp ?: 0f) != xp) { PetState.debugSetIndividualStats(this, m.first, m.second, xp = xp); restored++ }
+            sp.edit().putInt("candy_count", candiesBefore).commit()
+            lastCandyPicker?.dismiss()
+            showLevel()
+            dbg("caramelos (interfaz): restaurado ($restored Pokemon recuperan su XP, caramelos=${PetState.candyCount(this)})")
+        }, 8500)
+    }
+
+    // ==================== GUARDERIA ====================
+    // Se abre con el botón 🌱 de la cabecera (visible desde el nivel de entrenador que la desbloquea).
+    // Es una escena a PANTALLA COMPLETA (NurseryView): los Pokémon de la guardería andan sueltos por el
+    // jardín, con bebedero, manzanas y pelota. Encima solo hay tres botones: ✕ cerrar, el título con las
+    // plazas y ⚙ ajustes (showNurserySettings: meter/sacar Pokémon, huevos de cada uno y avisos de huevos).
+    // Tocar a un Pokémon enseña sus tres necesidades; las cubre él solo y gana XP por ello (ver
+    // PetState.simulateNurseryCare). Además gana XP por tiempo e incuba sus propios huevos (settleNursery).
+
+    private fun showNurseryDialog(preview: Boolean = false, forceTip: Boolean = false) {
+        val firstReport = PetState.settleNursery(this)   // que lo que se ve ya cuente lo ocurrido hasta ahora
+        // Vista previa (adb --ez debug_nursery_preview true): si la guarderia esta vacia, mete unos Pokemon
+        // unos segundos para que se vea la escena con gente; se vuelven a sacar al terminar.
+        val previewAdded = ArrayList<Pair<String, Boolean>>()
+        if (preview && PetState.nurseryMembers(this).isEmpty()) {
+            PetState.ownedIndividuals(this).filter { (n, s) -> PetState.nurseryBlockReason(this, n, s) == null }
+                .take(PetState.nurseryCapacity(this).coerceAtMost(3)).forEach { c ->
+                    if (PetState.nurseryAdd(this, c.first, c.second) == null) previewAdded.add(c)
+                }
+        }
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun pill(radiusDp: Int = 22) = android.graphics.drawable.GradientDrawable().apply {
+            setColor(0x99000000.toInt()); cornerRadius = dp(radiusDp).toFloat()
+        }
+        val loop = android.os.Handler(android.os.Looper.getMainLooper())
+
+        val dialog = android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen)
+        dialog.window?.let { w ->
+            androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)   // la escena llega hasta los bordes
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                val lp = w.attributes
+                lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                w.attributes = lp
+            }
+        }
+        val root = android.widget.FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#1B1822")) }
+        val scene = NurseryView(this)
+        root.addView(scene, android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // --- barra superior: ✕ | título | ⚙
+        fun roundButton(label: String, onClick: () -> Unit) = TextView(this).apply {
+            text = label
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = pill()
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { onClick() }
+        }
+        val titleView = TextView(this).apply {
+            textSize = 15f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, Typeface.BOLD)
+            background = pill()
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+        }
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(12), dp(12), 0)
+        }
+        // --- tarjeta de estado de un Pokemon (al tocarlo)
+        val infoName = TextView(this).apply { textSize = 15f; setTextColor(Color.WHITE); setTypeface(typeface, Typeface.BOLD) }
+        fun bar(color: String): android.widget.ProgressBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(color))
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4A4658"))
+            layoutParams = LinearLayout.LayoutParams(0, dp(8), 1f).apply { marginStart = dp(8) }
+        }
+        val infoHealth = bar("#E5604D"); val infoHappy = bar("#F2C14E"); val infoHygiene = bar("#4FA8E8")
+        fun infoRow(label: String, b: android.widget.ProgressBar) = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(TextView(this@MainActivity).apply { text = label; textSize = 12.5f; setTextColor(Color.WHITE); minWidth = dp(86) })
+            addView(b)
+        }
+        // Si el Pokemon ya puede evolucionar, la tarjeta lo dice y ofrece hacerlo; evoluciona sin salir de la guarderia.
+        val infoEvolve = TextView(this).apply {
+            text = "✨ ¡Puede evolucionar!  ·  Evolucionar"
+            textSize = 14f
+            setTextColor(Color.parseColor("#3A2A00"))
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(0xFFFFD54A.toInt()); cornerRadius = dp(14).toFloat() }
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
+        }
+        val infoRows = listOf(infoRow("🍎 Vida", infoHealth), infoRow("🎾 Felicidad", infoHappy), infoRow("💧 Higiene", infoHygiene))
+        val infoCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pill(16).apply { setColor(0xDD1B1822.toInt()) }
+            setPadding(dp(16), dp(12), dp(16), dp(14))
+            visibility = View.GONE
+            addView(infoName)
+            infoRows.forEach { addView(it) }
+            addView(infoEvolve)
+        }
+        val infoLp = android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+            .apply { setMargins(dp(20), 0, dp(20), dp(20)) }
+        var infoShown: Pair<String, Boolean>? = null
+        val hideInfo = Runnable { infoCard.visibility = View.GONE; infoShown = null }
+        fun fillInfo(n: String, s: Boolean) {
+            val st = PetState.rawStats(this, n, s) ?: return
+            infoRows.forEach { it.visibility = View.VISIBLE }   // por si la tarjeta era de un visitante
+            infoName.text = PetState.displayLabel(n).replaceFirstChar { it.uppercase() } + (if (s) " ✨" else "") + "  ·  Nv ${PetState.levelForPokemon(this, n, s) ?: 1}"
+            infoHealth.progress = st.health.toInt(); infoHappy.progress = st.happiness.toInt(); infoHygiene.progress = st.hygiene.toInt()
+            val canEvolve = PetState.evolutionReadyFor(this, n, s) != null
+            infoEvolve.visibility = if (canEvolve) View.VISIBLE else View.GONE
+        }
+        infoCard.setOnClickListener { loop.removeCallbacks(hideInfo); hideInfo.run() }
+        infoEvolve.setOnClickListener {
+            val (n, s) = infoShown ?: return@setOnClickListener
+            val pending = PetState.evolutionReadyFor(this, n, s) ?: return@setOnClickListener
+            dialog.dismiss()   // la animacion de evolucion se ve sobre la pantalla principal, no bajo la escena
+            // Evoluciona SOLO porque el jugador lo ha pedido, se queda en la guarderia y se vuelve a abrir para verlo ya evolucionado.
+            val back = { showNurseryDialog() }
+            if (pending.evolvesTo.size == 1) doEvolve(n, pending.evolvesTo.first(), s, back)
+            else showEvolutionChoiceDialog(n, pending.evolvesTo, s, back)
+        }
+
+        fun refreshTitle() {
+            titleView.text = "🌱 Guardería · ${PetState.nurseryMembers(this).size}/${PetState.nurseryCapacity(this)}"
+        }
+        // Visitantes: Pokemon que NO son tuyos y andan de paso (nivel parecido a los de dentro, cambian cada 15 min).
+        fun applyVisitors() {
+            val visitors = PetState.nurseryVisitors(this, accept = { n ->
+                !DungeonSpriteRepository.frames(this, n, false, DungeonSpriteRepository.Direction.DOWN).isNullOrEmpty()   // solo los que se pueden dibujar
+            })
+            scene.setVisitors(visitors.map { it.name to it.level })
+        }
+        fun applyMembers() {
+            scene.setMembers(PetState.nurseryMembers(this))
+            applyVisitors()   // dependen de los niveles de los de dentro
+            refreshTitle()
+        }
+        topBar.addView(roundButton("✕") { dialog.dismiss() })
+        topBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        topBar.addView(titleView)
+        topBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        val gearButton = roundButton("⚙") { showNurserySettings(onChanged = { applyMembers() }) }
+        topBar.addView(gearButton)
+        root.addView(topBar, android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
+        root.addView(infoCard, infoLp)
+        // Respetar muescas/barras: la barra superior y la tarjeta se apartan de ellas.
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            topBar.setPadding(dp(12) + bars.left, dp(12) + bars.top, dp(12) + bars.right, 0)
+            infoLp.bottomMargin = dp(20) + bars.bottom
+            infoCard.layoutParams = infoLp
+            insets
+        }
+        dialog.setContentView(root)
+        dialog.window?.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+
+        // Lo que la guarderia liquide mientras la escena esta abierta (o lo cubierto durante la ausencia) se
+        // representa en el jardin: el Pokemon va a la manzana / pelota / bebedero.
+        fun playEvents(report: PetState.NurseryReport?) {
+            report?.careEvents?.forEach { scene.queueCare(it.species, it.shiny, it.action) }
+        }
+        scene.onVisitorTap = { n, lvl ->
+            // Solo el nombre y el nivel (pedido del usuario: no hace falta avisar de cuando se va).
+            infoShown = null
+            infoName.text = "Visitante  ·  " + PetState.displayLabel(n).replaceFirstChar { it.uppercase() } + "  ·  Nv $lvl"
+            infoRows.forEach { it.visibility = View.GONE }
+            infoEvolve.visibility = View.GONE
+            infoCard.visibility = View.VISIBLE
+            loop.removeCallbacks(hideInfo)
+            loop.postDelayed(hideInfo, 5000L)
+        }
+        scene.onCritterTap = { n, s ->
+            fillInfo(n, s)
+            infoShown = n to s
+            infoCard.visibility = View.VISIBLE
+            loop.removeCallbacks(hideInfo)
+            // Con el boton de evolucionar dentro, mas tiempo para decidir (si no, se iria justo al ir a tocarlo).
+            loop.postDelayed(hideInfo, if (infoEvolve.visibility == View.VISIBLE) 10_000L else 5000L)
+        }
+        // El bebedero y la cesta se arrastran por el jardin y se quedan donde los dejes; la pelota se lanza.
+        // Con mas Pokemon salen una cesta y un bebedero mas ("trough2", "basket2"): tambien se arrastran y se recuerda donde los dejas.
+        scene.furnitureSaved = { key -> PetState.nurseryFurniturePos(this, key) }
+        scene.setFurniturePositions(PetState.nurseryFurniturePos(this, "trough"), PetState.nurseryFurniturePos(this, "basket"))
+        scene.onFurnitureMoved = { kind, fx, fy -> PetState.setNurseryFurniturePos(this, kind, fx, fy) }
+        val tick = object : Runnable {
+            override fun run() {
+                playEvents(PetState.settleNursery(this@MainActivity, force = true))
+                applyVisitors()   // al cambiar de franja (cada 15 min) se van unos y llegan otros
+                infoShown?.let { (n, s) -> if (infoCard.visibility == View.VISIBLE) fillInfo(n, s) }
+                loop.postDelayed(this, 15_000L)
+            }
+        }
+        dialog.setOnDismissListener {
+            scene.stop(); loop.removeCallbacksAndMessages(null); showLevel()
+            adapter.notifyDataSetChanged()   // la cuadricula marca en rosa a los que estan en la guarderia
+        }
+        applyMembers()
+        playEvents(firstReport)
+        dialog.show()
+        // Pantalla completa de verdad: fuera tambien la barra de navegacion (reaparece al deslizar desde el borde).
+        dialog.window?.let { w ->
+            val c = androidx.core.view.WindowInsetsControllerCompat(w, root)
+            c.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            c.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        scene.start()
+        loop.postDelayed(tick, 15_000L)
+        if (!preview) {
+            // Pista sobre la propia escena (en la ventana del dialogo): resalta el ⚙ y explica el resto.
+            val nurseryTargets = { id: String -> when (id) { "gear" -> gearButton; "title" -> titleView; else -> null } }
+            if (forceTip) TutorialTips.show(this, TutorialTips.Tip.NURSERY, force = true, host = dialog.window, resolve = nurseryTargets)
+            else TutorialTips.showPending(this, TutorialTips.Tip.NURSERY, host = dialog.window, resolve = nurseryTargets)
+        }
+        if (preview && intent?.getBooleanExtra("debug_nursery_tag", false) == true) {
+            // --ez debug_nursery_tag true: fuerza una partida de pilla-pilla y vuelca la escena en tres momentos; deja en el log los pillados.
+            loop.postDelayed({ dbg("guarderia: pilla-pilla forzado con ${scene.debugForceTag()} jugadores") }, 2000L)
+            dumpDialogView(dialog, "debug_nursery_tag_s.png", 2500)   // justo al empezar: el "!" de quien la lleva
+            dumpDialogView(dialog, "debug_nursery_tag_0.png", 3500)
+            dumpDialogView(dialog, "debug_nursery_tag_1.png", 6500)
+            dumpDialogView(dialog, "debug_nursery_tag_2.png", 10500)
+            for (ms in 2300..9300 step 700) loop.postDelayed({ dbg("guarderia: pilla-pilla a los ${(ms - 2000) / 1000.0} s: ${scene.debugTagStats()} ${scene.debugTagState()}") }, ms.toLong())
+            loop.postDelayed({ previewAdded.forEach { PetState.nurseryRemove(this, it.first, it.second) }; dialog.dismiss() }, 12000L)
+        } else if (preview && intent?.getBooleanExtra("debug_nursery_visitors", false) == true) {
+            // --ez debug_nursery_visitors true: cambia a los visitantes y vuelca la escena mientras unos andan hacia la puerta de la casa y entran
+            // y otros salen por ella y bajan por el camino; deja en el log donde esta cada uno.
+            loop.removeCallbacks(tick)   // el tick de 15 s volveria a poner a los visitantes de verdad en mitad de la prueba
+            loop.postDelayed({ dbg("guarderia: cambio de visitantes (llegan ${scene.debugChurnVisitors()}) - ${scene.debugVisitorState()}") }, 2000L)
+            dumpDialogView(dialog, "debug_nursery_visitors_0.png", 3000)
+            dumpDialogView(dialog, "debug_nursery_visitors_1.png", 5500)
+            dumpDialogView(dialog, "debug_nursery_visitors_2.png", 8000)
+            dumpDialogView(dialog, "debug_nursery_visitors_3.png", 11000)
+            dumpDialogView(dialog, "debug_nursery_visitors_4.png", 13000)   // ya han salido los de dentro y salen los nuevos
+            dumpDialogView(dialog, "debug_nursery_visitors_5.png", 14500)
+            dumpDialogView(dialog, "debug_nursery_visitors_6.png", 16500)
+            for (ms in 2500..20500 step 1500) loop.postDelayed({ dbg("guarderia: a los ${(ms - 2000) / 1000.0} s - ${scene.debugVisitorState()}") }, ms.toLong())
+            loop.postDelayed({ previewAdded.forEach { PetState.nurseryRemove(this, it.first, it.second) }; dialog.dismiss() }, 22000L)
+        } else if (preview && intent?.getBooleanExtra("debug_nursery_gather", false) == true) {
+            // --ez debug_nursery_gather true: prueba de "varios toques en un punto llaman a mis Pokemon" con toques sinteticos solo a la
+            // propia vista; vuelca la escena antes y despues y deja en el log cuanto se acercan.
+            var tx = 0.5f; var ty = 0.78f
+            var before = 0f
+            dumpDialogView(dialog, "debug_nursery_gather_0.png", 2300)
+            loop.postDelayed({
+                scene.debugFreeSpot()?.let { tx = it.first; ty = it.second }   // suelo vacio (un toque sobre un Pokemon abre su tarjeta)
+                before = scene.debugMeanDistance(tx, ty); scene.debugTap(tx, ty, 3)
+            }, 2500L)
+            dumpDialogView(dialog, "debug_nursery_gather_1.png", 2800)   // la onda del toque (y los visitantes, que no acuden)
+            dumpDialogView(dialog, "debug_nursery_gather_2.png", 8000)   // ya reunidos
+            loop.postDelayed({
+                dbg("guarderia: llamada con 3 toques en (${"%.2f".format(tx)}, ${"%.2f".format(ty)}) - distancia media al punto: antes ${before.toInt()} px, despues ${scene.debugMeanDistance(tx, ty).toInt()} px; por Pokemon: ${scene.debugDistances(tx, ty)}")
+            }, 8100L)
+            loop.postDelayed({ previewAdded.forEach { PetState.nurseryRemove(this, it.first, it.second) }; dialog.dismiss() }, 11500L)
+        } else if (preview) {
+            // Con los Pokemon de muestra, una necesidad real de cada tipo en marcha (solo visual) para ver las
+            // nubes y las acciones; volcados de la escena, de la tarjeta, de los ajustes y del selector.
+            scene.debugQueueSamples()
+            dumpDialogView(dialog, "debug_nursery_scene_0.png", 2500)
+            // Arrastre con eventos sinteticos (solo a la vista): bebedero y cesta a otro sitio y la pelota lanzada
+            // hacia el fondo; luego se restaura la disposicion que tuviera el jugador.
+            val troughBefore = PetState.nurseryFurniturePos(this, "trough"); val basketBefore = PetState.nurseryFurniturePos(this, "basket")
+            loop.postDelayed({
+                scene.debugDrag("trough", 0.30f, 0.80f)
+                scene.debugDrag("basket", 0.72f, 0.74f)
+            }, 3200L)
+            loop.postDelayed({ scene.debugDrag("ball", 0.28f, 0.55f) }, 3800L)
+            dumpDialogView(dialog, "debug_nursery_scene_2.png", 4600)
+            dumpDialogView(dialog, "debug_nursery_scene_1.png", 6500)
+            loop.postDelayed({
+                if (intent?.getBooleanExtra("debug_visitor_tap", false) == true) {
+                    // --ez debug_visitor_tap true: en vez de un miembro, se toca a un visitante (para ver su tarjeta).
+                    PetState.nurseryVisitors(this).firstOrNull()?.let { scene.onVisitorTap?.invoke(it.name, it.level) }
+                } else {
+                    // Si ya habia gente en la guarderia, se toca al primero que pueda evolucionar (para ver su tarjeta con el boton).
+                    (previewAdded.firstOrNull() ?: PetState.nurseryEvolvable(this).firstOrNull() ?: PetState.nurseryMembers(this).firstOrNull())
+                        ?.let { scene.onCritterTap?.invoke(it.first, it.second) }
+                }
+            }, 8000L)
+            dumpDialogView(dialog, "debug_nursery_info.png", 9500)
+            loop.postDelayed({
+                val settings = showNurserySettings(onChanged = { applyMembers() }, previewDump = "debug_nursery_settings.png")
+                loop.postDelayed({ settings.dismiss() }, 4500L)
+            }, 11000L)
+            loop.postDelayed({
+                val picker = showNurseryPicker({ applyMembers() }, previewDump = "debug_nursery_picker.png")
+                loop.postDelayed({
+                    picker.dismiss()
+                    // Segundo volcado del selector con la busqueda/filtros aplicados (ponen huevos, nivel de mayor a menor).
+                    val filtered = showNurseryPicker({ applyMembers() }, previewDump = "debug_nursery_picker_filtered.png", previewState = "layers")
+                    loop.postDelayed({ filtered.dismiss() }, 4000L)
+                }, 4000L)
+            }, 17000L)
+            loop.postDelayed({
+                previewAdded.forEach { PetState.nurseryRemove(this, it.first, it.second) }
+                if (troughBefore != null) PetState.setNurseryFurniturePos(this, "trough", troughBefore.first, troughBefore.second) else PetState.clearNurseryFurniturePos(this, "trough")
+                if (basketBefore != null) PetState.setNurseryFurniturePos(this, "basket", basketBefore.first, basketBefore.second) else PetState.clearNurseryFurniturePos(this, "basket")
+                dialog.dismiss()
+                dbg("guarderia: vista previa terminada (${previewAdded.size} de muestra vueltos a sacar)")
+            }, 23000L)
+        }
+    }
+
+    /** Ajustes de la guardería (botón ⚙): quién está dentro (meter/sacar), si cada uno pone huevos, y cómo
+     *  avisan los huevos. Al cerrarlo se llama a [onChanged] para que la escena refleje los cambios. Devuelve
+     *  el diálogo (para poder cerrarlo desde las pruebas). */
+    private fun showNurserySettings(onChanged: () -> Unit, previewDump: String? = null): androidx.appcompat.app.AlertDialog {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val secondary = dialogSecondaryTextColor()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val loader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("⚙ Ajustes de la guardería")
+            .setView(ScrollView(this).apply { addView(root) })
+            .setPositiveButton("Cerrar", null)
+            .create()
+        dialog.setOnDismissListener { loader.shutdown(); showLevel(); onChanged() }
+
+        fun bar(color: String): android.widget.ProgressBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(color))
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4A4658"))
+            layoutParams = LinearLayout.LayoutParams(0, dp(7), 1f).apply { marginStart = dp(8) }
+        }
+
+        fun rebuild() {
+            root.removeAllViews()
+            val members = PetState.nurseryMembers(this)
+            val capacity = PetState.nurseryCapacity(this)
+            val next = PetState.nurseryNextSlotLevel(this)
+            root.addView(TextView(this).apply {
+                text = "Plazas: ${members.size} / $capacity" +
+                    (if (next != null) "  ·  la siguiente, en el nivel de entrenador $next" else "  ·  ¡todas desbloqueadas!")
+                textSize = 14f
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            root.addView(TextView(this).apply {
+                val xpH = PetState.nurseryXpPerHour().toInt()
+                text = "Cada Pokémon gana $xpH XP por hora y tiene las mismas necesidades que cuando lo cuidas: " +
+                    "come de la cesta de manzanas (vida), juega con la pelota (felicidad) y bebe del bebedero (higiene) cuando le hace falta, " +
+                    "y gana +5 XP cada vez. Si puede poner huevos, los incuba él solo: los shiny se quedan contigo y el resto " +
+                    "se convierte en caramelos. No puede explorar la mazmorra mientras está dentro. " +
+                    "En el jardín puedes arrastrar el bebedero y la cesta para cambiarlos de sitio, y lanzar la pelota: irán a por ella."
+                textSize = 12.5f
+                setTextColor(secondary)
+                setPadding(0, dp(6), 0, dp(10))
+            })
+            for ((n, s) in members) {
+                val st = PetState.rawStats(this, n, s)
+                val img = ImageView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                loader.execute {
+                    val bmp = SpriteRepository.localFirstFrameScaled(this, n, s, PetState.spriteScaleMode(this))
+                    if (bmp != null) runOnUiThread { img.setImageBitmap(bmp) }
+                }
+                fun barRow(label: String, value: Float, color: String) = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(2), 0, 0)
+                    addView(TextView(this@MainActivity).apply { text = label; textSize = 11.5f; minWidth = dp(76) })
+                    addView(bar(color).apply { progress = value.toInt() })
+                }
+                val info = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(10), 0, dp(8), 0)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(TextView(this@MainActivity).apply {
+                        text = PetState.displayLabel(n).replaceFirstChar { it.uppercase() } + (if (s) " ✨" else "") +
+                            "  ·  Nv ${PetState.levelForPokemon(this@MainActivity, n, s) ?: 1}"
+                        textSize = 15f
+                        setTypeface(typeface, Typeface.BOLD)
+                    })
+                    if (st != null) {
+                        addView(barRow("🍎 Vida", st.health, "#E5604D"))
+                        addView(barRow("🎾 Felicidad", st.happiness, "#F2C14E"))
+                        addView(barRow("💧 Higiene", st.hygiene, "#4FA8E8"))
+                    }
+                    // Poner huevos (como en la ficha): solo si esta en su ultima fase y asi puede poner.
+                    if (PetState.isFinalStage(this@MainActivity, n)) {
+                        addView(android.widget.CheckBox(this@MainActivity).apply {
+                            text = "🥚 Pone huevos"
+                            textSize = 12.5f
+                            isChecked = PetState.eggLayingEnabled(this@MainActivity, n)
+                            setOnCheckedChangeListener { _, checked -> PetState.setEggLayingEnabled(this@MainActivity, n, checked) }
+                        })
+                    }
+                }
+                root.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, dp(6))
+                    addView(img)
+                    addView(info)
+                    addView(Button(this@MainActivity).apply {
+                        text = "Sacar"
+                        isAllCaps = false
+                        setOnClickListener {
+                            PetState.nurseryRemove(this@MainActivity, n, s)
+                            Toast.makeText(this@MainActivity, "${PetState.displayLabel(n)} sale de la guardería", Toast.LENGTH_SHORT).show()
+                            showLevel()
+                            rebuild()
+                        }
+                    })
+                })
+            }
+            if (members.isEmpty()) {
+                root.addView(TextView(this).apply {
+                    text = "La guardería está vacía. Mete a alguien y se pondrá a jugar en el jardín."
+                    textSize = 13f
+                    setPadding(0, dp(4), 0, dp(8))
+                })
+            }
+            if (members.size < capacity) {
+                root.addView(Button(this).apply {
+                    text = "＋ Añadir un Pokémon (${capacity - members.size} libre${if (capacity - members.size == 1) "" else "s"})"
+                    isAllCaps = false
+                    setOnClickListener { showNurseryPicker(onChanged = { rebuild() }) }
+                })
+            }
+            root.addView(TextView(this).apply {
+                text = "Avisos de huevos"
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(0, dp(14), 0, dp(2))
+            })
+            val group = android.widget.RadioGroup(this).apply { orientation = android.widget.RadioGroup.VERTICAL }
+            val always = android.widget.RadioButton(this).apply {
+                id = View.generateViewId()
+                text = "Siempre (un resumen por tanda; los shiny avisan aparte)"
+                textSize = 13f
+            }
+            val onlyShiny = android.widget.RadioButton(this).apply {
+                id = View.generateViewId()
+                text = "Solo cuando sale un shiny"
+                textSize = 13f
+            }
+            group.addView(always); group.addView(onlyShiny)
+            group.check(if (PetState.nurseryNotifyAlways(this)) always.id else onlyShiny.id)
+            group.setOnCheckedChangeListener { _, checked -> PetState.setNurseryNotifyAlways(this, checked == always.id) }
+            root.addView(group)
+        }
+        rebuild()
+        dialog.show()
+        previewDump?.let { dumpDialogView(dialog, it, 1800) }
+        return dialog
+    }
+
+    /** Elegir a quién meter en la guardería: cuadrícula como la de la mazmorra (3 por fila, con sprite y nivel) y,
+     *  porque con muchos Pokémon cuesta encontrar a alguien, búsqueda por nombre, orden (nivel ▲/▼ o nombre) y
+     *  filtros ("Disponibles", "Ponen huevos", "Shiny"). Los que no pueden entrar se ven en gris con el motivo
+     *  y van al final. Al elegir a alguien, entra y el selector se cierra. */
+    private fun showNurseryPicker(onChanged: () -> Unit, previewDump: String? = null, previewState: String? = null): androidx.appcompat.app.AlertDialog {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        class Cand(val name: String, val shiny: Boolean, val level: Int, val reason: String?, val layer: Boolean)
+        val all = PetState.ownedIndividuals(this).mapNotNull { (n, s) ->
+            if (PetState.isInNursery(this, n, s)) return@mapNotNull null
+            val lvl = PetState.levelForPokemon(this, n, s) ?: return@mapNotNull null
+            Cand(n, s, lvl, PetState.nurseryBlockReason(this, n, s), PetState.isFinalStage(this, n) && PetState.eggLayingEnabled(this, n))
+        }
+        val sortLabels = listOf("Nivel ▲", "Nivel ▼", "Nombre A-Z")
+        // Orden (0 = nivel ▲ - los que van por detrás primero -, 1 = nivel ▼, 2 = nombre) y filtros: se recuerdan entre aperturas y
+        // entre arranques de la app. Lo que se escribe en el buscador no.
+        var sortMode = UiPrefs.int(this, UiPrefs.NURSERY_SORT, 0).takeIf { it in sortLabels.indices } ?: 0
+        var query = ""
+        var onlyFree = UiPrefs.bool(this, UiPrefs.NURSERY_ONLY_FREE, false)
+        var onlyLayers = UiPrefs.bool(this, UiPrefs.NURSERY_ONLY_LAYERS, false)
+        var onlyShiny = UiPrefs.bool(this, UiPrefs.NURSERY_ONLY_SHINY, false)
+        // Solo para la vista previa de pruebas: arrancar con un filtro y un orden ya puestos (y NO tocar lo guardado).
+        if (previewState == "layers") { onlyLayers = true; onlyFree = false; onlyShiny = false; sortMode = 1 }
+        val remember = previewState == null
+
+        fun filtered(): List<Cand> {
+            val q = query.trim().lowercase()
+            val list = all.filter { c ->
+                (q.isEmpty() || c.name.contains(q) || PetState.displayLabel(c.name).lowercase().contains(q)) &&
+                    (!onlyFree || c.reason == null) && (!onlyLayers || c.layer) && (!onlyShiny || c.shiny)
+            }
+            return when (sortMode) {
+                0 -> list.sortedWith(compareBy({ it.reason != null }, { it.level }, { it.name }))
+                1 -> list.sortedWith(compareBy({ it.reason != null }, { -it.level }, { it.name }))
+                else -> list.sortedWith(compareBy({ it.reason != null }, { PetState.displayLabel(it.name) }))
+            }
+        }
+        fun shortReason(r: String) = when {
+            r.contains("activo") -> "🏠 activo"
+            r.contains("mazmorra") -> "🗺️ mazmorra"
+            r.contains("Ya está") -> "🌱 dentro"
+            r.contains("plazas") -> "sin plazas"
+            else -> "no disponible"
+        }
+
+        var rows = filtered()
+        val sprites = android.util.LruCache<String, Bitmap>(120)
+        val loader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        lateinit var dialog: androidx.appcompat.app.AlertDialog
+        val countText = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#B8B0C8")); setPadding(dp(2), dp(6), 0, dp(4)) }
+        val rv = RecyclerView(this)
+        val adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount() = rows.size
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val cell = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setBackgroundColor(Color.parseColor("#332F3B"))
+                    setPadding(dp(6), dp(8), dp(6), dp(8))
+                    layoutParams = ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }
+                }
+                cell.addView(ImageView(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(64), dp(56))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                })
+                cell.addView(TextView(this@MainActivity).apply { textSize = 11f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 1 })
+                cell.addView(TextView(this@MainActivity).apply { textSize = 10f; gravity = Gravity.CENTER; maxLines = 1 })
+                return object : RecyclerView.ViewHolder(cell) {}
+            }
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                val c = rows[position]
+                val cell = holder.itemView as LinearLayout
+                val img = cell.getChildAt(0) as ImageView
+                val name = cell.getChildAt(1) as TextView
+                val sub = cell.getChildAt(2) as TextView
+                name.text = PetState.displayLabel(c.name) + (if (c.shiny) " ✨" else "")
+                sub.text = c.reason?.let { shortReason(it) } ?: ("Nv. ${c.level}" + if (c.layer) " 🥚" else "")
+                sub.setTextColor(if (c.reason != null) Color.parseColor("#E0A521") else Color.parseColor("#B8B0C8"))
+                cell.alpha = if (c.reason != null) 0.5f else 1f
+                val key = "${c.name}|${c.shiny}"
+                img.tag = key
+                img.setImageBitmap(sprites.get(key))
+                if (sprites.get(key) == null) {
+                    loader.execute {
+                        val bmp = SpriteRepository.localFirstFrameScaled(this@MainActivity, c.name, c.shiny, PetState.spriteScaleMode(this@MainActivity))
+                        if (bmp != null) {
+                            sprites.put(key, bmp)
+                            runOnUiThread { if (img.tag == key) img.setImageBitmap(bmp) }
+                        }
+                    }
+                }
+                cell.setOnClickListener {
+                    if (c.reason != null) {
+                        Toast.makeText(this@MainActivity, c.reason, Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    val err = PetState.nurseryAdd(this@MainActivity, c.name, c.shiny)
+                    if (err != null) {
+                        Toast.makeText(this@MainActivity, err, Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "${PetState.displayLabel(c.name)} entra en la guardería", Toast.LENGTH_SHORT).show()
+                        showLevel()
+                        dialog.dismiss()
+                        onChanged()
+                    }
+                }
+            }
+        }
+        fun refresh() {
+            rows = filtered()
+            adapter.notifyDataSetChanged()
+            countText.text = if (rows.isEmpty()) "Ningún Pokémon coincide · prueba con otro filtro" else "${rows.size} Pokémon"
+            rv.scrollToPosition(0)
+        }
+        fun chip(label: String, selected: Boolean, onClick: (TextView) -> Unit) = TextView(this).apply {
+            text = label
+            textSize = 12.5f
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            setBackgroundColor(Color.parseColor(if (selected) "#EE1515" else "#332F3B"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
+            setOnClickListener { onClick(this) }
+        }
+        val search = android.widget.EditText(this).apply {
+            hint = "🔍 Buscar por nombre"
+            setSingleLine()
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#8C849C"))
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) { query = s?.toString().orEmpty(); refresh() }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+        }
+        val sortChip = chip(sortLabels[sortMode], selected = false) { v ->
+            sortMode = (sortMode + 1) % sortLabels.size
+            (v as TextView).text = sortLabels[sortMode]
+            if (remember) UiPrefs.putInt(this, UiPrefs.NURSERY_SORT, sortMode)
+            refresh()
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#15131A"))
+            setPadding(dp(10), dp(8), dp(10), dp(4))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(search)
+                addView(sortChip.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
+            })
+            addView(android.widget.HorizontalScrollView(this@MainActivity).apply {
+                isHorizontalScrollBarEnabled = false
+                setPadding(0, dp(8), 0, 0)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(chip("🌱 Disponibles", onlyFree) { v -> onlyFree = !onlyFree; if (remember) UiPrefs.putBool(this@MainActivity, UiPrefs.NURSERY_ONLY_FREE, onlyFree); v.setBackgroundColor(Color.parseColor(if (onlyFree) "#EE1515" else "#332F3B")); refresh() })
+                    addView(chip("🥚 Ponen huevos", onlyLayers) { v -> onlyLayers = !onlyLayers; if (remember) UiPrefs.putBool(this@MainActivity, UiPrefs.NURSERY_ONLY_LAYERS, onlyLayers); v.setBackgroundColor(Color.parseColor(if (onlyLayers) "#EE1515" else "#332F3B")); refresh() })
+                    addView(chip("✨ Shiny", onlyShiny) { v -> onlyShiny = !onlyShiny; if (remember) UiPrefs.putBool(this@MainActivity, UiPrefs.NURSERY_ONLY_SHINY, onlyShiny); v.setBackgroundColor(Color.parseColor(if (onlyShiny) "#EE1515" else "#332F3B")); refresh() })
+                })
+            })
+            addView(countText)
+            addView(rv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.56f).toInt()))
+        }
+        rv.layoutManager = androidx.recyclerview.widget.GridLayoutManager(this, 3)
+        rv.adapter = adapter
+        countText.text = "${rows.size} Pokémon"
+        dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("¿A quién metes en la guardería?")
+            .setView(root)
+            .setNegativeButton("Cerrar", null)
+            .create()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
+        dialog.setOnDismissListener { loader.shutdown(); refreshUnlockButtons() }
+        dialog.show()
+        previewDump?.let { dumpDialogView(dialog, it, 2500) }
+        return dialog
+    }
+
+    /** Si el nivel de entrenador ha subido desde la ultima vez, lo dice (y cuenta lo que se
+     *  desbloquea). La primera vez que se calcula NO avisa de nada (ver PetState.noteTrainerLevel). */
+    private fun announceTrainerLevelUp() {
+        val (newMax, from) = PetState.noteTrainerLevel(this)
+        if (from == null) return
+        val lines = ArrayList<String>()
+        for (lvl in (from + 1)..newMax) lines.addAll(PetState.unlocksAtTrainerLevel(lvl))
+        val msg = "¡Nivel de entrenador $newMax!" + if (lines.isNotEmpty()) "\n" + lines.joinToString("\n") { "🔓 $it" } else ""
+        dbg("entrenador: sube de nivel $from -> $newMax (desbloquea: ${lines.joinToString(" | ")})")
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    }
+
+    /** Los botones de la cabecera que se desbloquean con el nivel de entrenador: 🎒 mochila (nivel 4) y
+     *  🌱 guardería (nivel 6); ninguno lleva un numero a su lado (pedido del usuario: sobraba). */
+    private fun refreshUnlockButtons() {
+        findViewById<TextView>(R.id.btn_bag)?.let { btn ->
+            val unlocked = PetState.candiesUnlocked(this)
+            btn.visibility = if (unlocked) View.VISIBLE else View.GONE
+            if (unlocked) {
+                btn.text = "🎒"   // sin el numero de caramelos a su lado (pedido del usuario: sobraba)
+                // ¡Mochila desbloqueada!: la primera vez se señala el boton.
+                window.decorView.post { TutorialTips.showPending(this, TutorialTips.Tip.BACKPACK, resolve = ::tipTarget) }
+            }
+        }
+        findViewById<TextView>(R.id.btn_nursery)?.let { btn ->
+            val unlocked = PetState.nurseryUnlocked(this)
+            btn.visibility = if (unlocked) View.VISIBLE else View.GONE
+            if (unlocked) btn.text = "🌱"
+        }
     }
 
     private fun loadAllMons() {
@@ -3208,6 +4704,15 @@ class MainActivity : AppCompatActivity() {
      *  individuo activar - el normal o el shiny (ver PetState.slot/hasIndividual) - la variante
      *  que se estuviera viendo en la ficha, no necesariamente la que hubiera antes. */
     private fun selectPokemon(mon: Mon, shiny: Boolean) {
+        // Uno que esta en la guarderia o en la mazmorra no se puede poner en el widget (pedido explicito del usuario).
+        if (PetState.isInNursery(this, mon.name, shiny)) {
+            Toast.makeText(this, "${PetState.displayLabel(mon.name)} está en la guardería: sácalo de ahí para ponerlo en el widget", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (DungeonState.isInParty(this, mon.name, shiny) && !(mon.name == PetState.currentPokemon(this) && shiny == PetState.isActiveShiny(this))) {
+            Toast.makeText(this, "${PetState.displayLabel(mon.name)} está en la mazmorra: no se puede cuidar hasta que salga", Toast.LENGTH_LONG).show()
+            return
+        }
         Thread {
             val meta = SpriteRepository.ensure(
                 this, mon.name, mon.id, PetState.currentStyle(this), shiny, PetState.spriteScaleMode(this)
@@ -3216,12 +4721,17 @@ class MainActivity : AppCompatActivity() {
                 if (meta != null) {
                     val prev = selected
                     dbg("activo: $prev -> ${mon.name} (shiny=$shiny)")
+                    val leavesNursery = PetState.isInNursery(this, mon.name, shiny)   // setPokemon lo saca de la guarderia
                     PetState.setPokemon(this, mon.name, mon.id, shiny)
                     selected = mon.name
                     WidgetRefresh.updateWidgets(this)
                     showLevel()
                     adapter.refreshSelection(prev, mon.name)
-                    Toast.makeText(this, "${PetState.displayLabel(mon.name)} está en el widget", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        "${PetState.displayLabel(mon.name)} está en el widget" + if (leavesNursery) " (ha salido de la guardería)" else "",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } else {
                     Toast.makeText(this, "Sin sprite animado: ${PetState.displayLabel(mon.name)}", Toast.LENGTH_SHORT).show()
                 }
@@ -3738,6 +5248,20 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(Color.parseColor("#888888"))
                     setPadding(0, dp(8), 0, 0)
                 })
+            } else if (PetState.isInNursery(this, mon.name, viewShiny)) {
+                // Pedido explicito del usuario: igual que uno de la mazmorra, uno que esta en la guarderia no se puede
+                // poner en el widget (para cuidarlo hay que sacarlo antes de la guarderia).
+                root.addView(TextView(this).apply {
+                    text = "🌱 Está en la guardería - no se puede cuidar mientras esté dentro. Sácalo de la guardería (⚙) para poder ponerlo en el widget."
+                    setTextColor(Color.parseColor("#C2185B"))
+                    setPadding(0, dp(8), 0, 0)
+                })
+            } else if (DungeonState.isInParty(this, mon.name, viewShiny)) {
+                root.addView(TextView(this).apply {
+                    text = "🗺️ Está en la mazmorra - no se puede cuidar hasta que salga de ella."
+                    setTextColor(Color.parseColor("#C62828"))
+                    setPadding(0, dp(8), 0, 0)
+                })
             } else {
                 selectBtn = Button(this).apply { text = "Cuidar a este Pokémon"; isAllCaps = false }
                 root.addView(selectBtn)
@@ -3936,7 +5460,9 @@ class MainActivity : AppCompatActivity() {
             dialog.dismiss()
             showDecorativeFormDialog(mon, decorativeFormRootSpecies, decorativeFormLabelFor, decorativeFormSpriteKeyFor, viewShiny)
         }
+        lastDetailDialog = dialog
         dialog.show()
+        if (megaButton != null) TutorialTips.showPending(this, TutorialTips.Tip.MEGA, onScreen = true, resolve = { id -> if (id == "mega") megaButton else null })
     }
 
     /** Selector para las especies de "formas decorativas" (Alcremie, Pikachu, Furfrou, Vivillon,
@@ -4271,7 +5797,7 @@ class MainActivity : AppCompatActivity() {
      *  evolucion posibles (Eevee, Slowpoke, Pikachu/Raichu de Alola...) - un sprite animado por
      *  opcion, tocar uno evoluciona a esa directamente. Pedido explicito del usuario en vez de
      *  apilar un boton de texto por opcion (con Eevee serian 8 botones). */
-    private fun showEvolutionChoiceDialog(fromName: String, options: List<PetState.EvoOption>, shiny: Boolean) {
+    private fun showEvolutionChoiceDialog(fromName: String, options: List<PetState.EvoOption>, shiny: Boolean, onEvolved: (() -> Unit)? = null): androidx.appcompat.app.AlertDialog {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
 
@@ -4300,6 +5826,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         lateinit var dialog: androidx.appcompat.app.AlertDialog
+        var anyOwned = false
         // Mismas filas de hasta 3 centradas que en la oferta, por si hay muchas ramas (Eevee).
         options.chunked(3).forEach { rowOpts ->
             val rowLl = LinearLayout(this).apply {
@@ -4331,9 +5858,23 @@ class MainActivity : AppCompatActivity() {
                 loadAnimatedSprite(cell, opt.name, shiny)
                 cell.setOnClickListener {
                     dialog.dismiss()
-                    doEvolve(fromName, opt, shiny)
+                    doEvolve(fromName, opt, shiny, onEvolved)
                 }
-                cellCol.addView(cell)
+                // Las que YA tienes (individuo vivo de esa variante) llevan una Poké Ball en la esquina de la casilla.
+                val owned = PetState.ownsLiveIndividual(this, opt.name, shiny)
+                if (owned) anyOwned = true
+                cellCol.addView(android.widget.FrameLayout(this).apply {
+                    // Sin esto, el hueco de una columna vertical ocupa solo el ancho del nombre y recorta la casilla.
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    addView(cell)
+                    if (owned) {
+                        addView(ImageView(this@MainActivity).apply {
+                            setImageResource(R.drawable.ic_pokeball)
+                            contentDescription = "Ya lo tienes"
+                            layoutParams = android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(3), dp(3), 0) }
+                        })
+                    }
+                })
                 cellCol.addView(TextView(this).apply {
                     text = opt.name
                     textSize = 11f
@@ -4346,6 +5887,25 @@ class MainActivity : AppCompatActivity() {
             }
             content.addView(rowLl)
         }
+        if (anyOwned) {
+            content.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10)
+                }
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_pokeball)
+                    layoutParams = LinearLayout.LayoutParams(dp(16), dp(16))
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = "  Ya lo tienes"
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    setShadowLayer(3f, 1f, 1f, Color.BLACK)
+                })
+            })
+        }
 
         content.addView(Button(this).apply {
             text = "Cancelar"; isAllCaps = false; textSize = 12f
@@ -4357,6 +5917,7 @@ class MainActivity : AppCompatActivity() {
         frame.addView(content)
         dialog = androidx.appcompat.app.AlertDialog.Builder(this).setView(frame).create()
         dialog.show()
+        return dialog
     }
 
     /** Fila de estadistica con icono+porcentaje a la izquierda y una barra de progreso del
@@ -4734,13 +6295,18 @@ class MainActivity : AppCompatActivity() {
         allMech.mapNotNull { it.megaShowcase }.distinctBy { it.title }.forEach { addMechanicSection(it) }
 
         val scroll = ScrollView(this).apply { addView(root) }
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        lastChainDialog = androidx.appcompat.app.AlertDialog.Builder(this)
             .setView(scroll)
             .setNegativeButton("Cerrar", null)
             .show()
     }
+    /** SOLO PRUEBAS: el ultimo dialogo de cadena evolutiva abierto (para volcarlo, ver "debug_chain"). */
+    private var lastChainDialog: androidx.appcompat.app.AlertDialog? = null
 
     // ---------------- Adapter ----------------
+    /** Estado de una celda de la cuadricula principal: el que cuidas (verde), en la mazmorra (rojo) o en la guarderia (rosa). */
+    private enum class CellState { NONE, ACTIVE, DUNGEON, NURSERY }
+
     private inner class DexAdapter : RecyclerView.Adapter<MonVH>() {
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MonVH =
@@ -4800,8 +6366,24 @@ class MainActivity : AppCompatActivity() {
             }
             // Lo NO conseguido usa el mismo tinte gris que lo evolucionado, pero revelando su
             // sprite real (no un "?" generico) para poder identificarlo de un vistazo.
+            // Estado de la celda (pedido explicito del usuario): el que estas cuidando (activo) en verde, el que esta en la
+            // mazmorra en rojo y el que esta en la guarderia en rosa. Se mira el individuo que se muestra en la fila; si es
+            // el activo, el verde gana (la guarderia no admite al activo, y en la mazmorra solo puede coincidir si lo
+            // pusiste activo mientras exploraba).
+            val cellState = when {
+                !unlocked -> CellState.NONE
+                row.name == selected -> CellState.ACTIVE
+                DungeonState.isInParty(this@MainActivity, row.name, shiny) -> CellState.DUNGEON
+                PetState.isInNursery(this@MainActivity, row.name, shiny) -> CellState.NURSERY
+                else -> CellState.NONE
+            }
             holder.name.setTextColor(
-                if (row.name == selected) Color.parseColor("#1B5E20") else Color.parseColor("#EEEEEE")
+                when (cellState) {
+                    CellState.ACTIVE -> Color.parseColor("#1B5E20")
+                    CellState.DUNGEON -> Color.parseColor("#8E1010")
+                    CellState.NURSERY -> Color.parseColor("#AD1457")
+                    CellState.NONE -> if (row.name == selected) Color.parseColor("#1B5E20") else Color.parseColor("#EEEEEE")
+                }
             )
             if (unlocked && !evolvedAway) holder.thumb.clearColorFilter()
             else holder.thumb.setColorFilter(Color.parseColor("#707070"))
@@ -4839,7 +6421,12 @@ class MainActivity : AppCompatActivity() {
                 holder.lvl.text = ""
             }
             holder.root.setBackgroundColor(
-                if (unlocked && row.name == selected) Color.parseColor("#B7F0B1") else Color.TRANSPARENT
+                when (cellState) {
+                    CellState.ACTIVE -> Color.parseColor("#B7F0B1")     // verde: el que estas cuidando
+                    CellState.DUNGEON -> Color.parseColor("#EF8F88")    // rojo: en la mazmorra
+                    CellState.NURSERY -> Color.parseColor("#FBCFE3")    // rosa: en la guarderia
+                    CellState.NONE -> Color.TRANSPARENT
+                }
             )
             holder.root.setOnClickListener { onPick(row) }
         }

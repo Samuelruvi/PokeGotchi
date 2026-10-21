@@ -51,6 +51,19 @@ object DungeonState {
     // DungeonSimulator justo despues de returnDefeated/returnFinished para decidir si reasigna
     // la MISMA especie de inmediato en vez de dejar el slot en IDLE.
     private const val KEY_AUTO_REPEAT = "auto_repeat"
+    // Compañeros del explorador (pedido explicito del usuario: "el explorador extra... que sea un
+    // acompañante, no una mazmorra extra... que esten todos en el mismo sitio y que todo lo que ganen
+    // se lo repartan"): JSON [{"n":"pikachu","s":false}, ...]. Viajan en la MISMA carrera que el
+    // lider (species/shiny), con su mismo ciclo de vida: se fijan al asignar, sobreviven al fin de
+    // carrera con el modo continuo igual que species/shiny/autoRepeat, y se pueden cambiar durante
+    // el cierre (queueNextExplorer). Solo cuentan mientras la mazmorra NO esta IDLE (ver isInParty).
+    private const val KEY_COMPANIONS = "companions"
+    // Vida de cada compañero en la carrera en curso (JSON [120.0, 96.5], mismo orden que KEY_COMPANIONS): los
+    // compañeros PELEAN junto al explorador (ver DungeonSimulator.resolveEncounter), cada uno con su vida.
+    private const val KEY_COMPANION_HPS = "companion_hps"
+    // Quien va delante en el equipo (indice) y la casilla de cada compañero (JSON [[x,y],...]) en la carrera en curso.
+    private const val KEY_FRONT = "front_member"
+    private const val KEY_FOLLOWER_TILES = "follower_tiles"
 
     private const val KEY_MAP_FLOOR = "map_floor" // a que piso pertenece el mapa guardado - si no coincide con KEY_FLOOR, esta obsoleto
     private const val KEY_MAP_W = "map_w"
@@ -182,7 +195,7 @@ object DungeonState {
         prefs(context).getString(KEY_SPECIES, null)?.takeIf { it.isNotEmpty() }
     fun currentShiny(context: Context): Boolean = prefs(context).getBoolean(KEY_SHINY, false)
     fun currentFloor(context: Context): Int = prefs(context).getInt(KEY_FLOOR, 1)
-    fun currentHp(context: Context): Float = prefs(context).getFloat(KEY_HP, 0f)
+    fun currentHp(context: Context): Float = prefs(context).getFloatSafe(KEY_HP, 0f)
     fun bestFloor(context: Context): Int = prefs(context).getInt(KEY_BEST_FLOOR, 0)
     fun lastTickAt(context: Context): Long = prefs(context).getLong(KEY_LAST_TICK_AT, 0L)
 
@@ -198,6 +211,132 @@ object DungeonState {
         prefs(context).getInt(KEY_PLAYER_X, 0) to prefs(context).getInt(KEY_PLAYER_Y, 0)
 
     fun autoRepeat(context: Context): Boolean = prefs(context).getBoolean(KEY_AUTO_REPEAT, false)
+
+    // ==================== GRUPO: LIDER + COMPAÑEROS ====================
+    // El LIDER es el explorador de siempre (species/shiny): el que pelea y el que pone la vida. Los
+    // COMPAÑEROS van en la misma carrera y se reparten el XP (ver ExplorerPartyRules y
+    // DungeonSimulator.stepOnce). Cuantos puede llevar depende del nivel de entrenador.
+
+    /** Vida de cada compañero en la carrera en curso (puede ser mas corta que [companions] en una carrera guardada
+     *  antes de que los compañeros pelearan: quien falte se da por completo, ver DungeonSimulator.loadRunState). */
+    fun companionHps(context: Context): List<Float> {
+        val arr = try { JSONArray(prefs(context).getString(KEY_COMPANION_HPS, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        return (0 until arr.length()).map { arr.optDouble(it, 0.0).toFloat() }
+    }
+
+    private fun hpsJson(list: List<Float>): String = JSONArray().apply { list.forEach { put(it.toDouble()) } }.toString()
+
+    /** Quien va delante (indice del grupo: 0 = lider) en la carrera en curso. */
+    fun frontMember(context: Context): Int = prefs(context).getInt(KEY_FRONT, 0)
+
+    /** Casilla de cada compañero en la carrera en curso (vacio si aun no se han colocado). */
+    fun followerTiles(context: Context): List<Pair<Int, Int>> {
+        val arr = try { JSONArray(prefs(context).getString(KEY_FOLLOWER_TILES, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        return (0 until arr.length()).mapNotNull { i ->
+            val t = arr.optJSONArray(i) ?: return@mapNotNull null
+            if (t.length() < 2) null else t.optInt(0) to t.optInt(1)
+        }
+    }
+
+    fun saveTeamLayout(context: Context, front: Int, followerTiles: List<Pair<Int, Int>>) {
+        val tiles = JSONArray().apply { followerTiles.forEach { (x, y) -> put(JSONArray().put(x).put(y)) } }.toString()
+        prefs(context).edit().putInt(KEY_FRONT, front).putString(KEY_FOLLOWER_TILES, tiles).apply()
+    }
+
+    /** Compañeros guardados (de la carrera en curso, o la pre-eleccion de la siguiente durante el cierre). */
+    fun companions(context: Context): List<Pair<String, Boolean>> {
+        val arr = try { JSONArray(prefs(context).getString(KEY_COMPANIONS, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            o.optString("n").takeIf { it.isNotEmpty() }?.let { it to o.optBoolean("s", false) }
+        }
+    }
+
+    private fun companionsJson(list: List<Pair<String, Boolean>>): String =
+        JSONArray().apply { list.forEach { (n, s) -> put(JSONObject().put("n", n).put("s", s)) } }.toString()
+
+    /** Lider + compañeros, en ese orden (vacio si no hay lider). */
+    fun party(context: Context): List<Pair<String, Boolean>> {
+        val leader = currentSpecies(context) ?: return emptyList()
+        return listOf(leader to currentShiny(context)) + companions(context)
+    }
+
+    /** ¿[name]/[shiny] forma parte del grupo de una mazmorra que NO esta en IDLE (lider, compañero, o
+     *  pre-elegido durante el cierre)? Mientras tanto no puede ir a la guarderia ni entrar de nuevo. */
+    fun isInParty(context: Context, name: String, shiny: Boolean): Boolean =
+        status(context) != STATUS_IDLE && party(context).any { (n, s) -> n.equals(name, ignoreCase = true) && s == shiny }
+
+    /** [from]/[shiny] acaba de evolucionar a [to] (ver PetState.evolveTo): el MISMO individuo sigue en
+     *  el grupo con su especie nueva - lider o compañero, en la carrera en curso o pre-elegido durante el
+     *  cierre. Sin esto la mazmorra seguia explorando con la forma vieja, que ya no existe (ni gana XP) a
+     *  la vez que la nueva pasaba a ser el activo del widget (QaConflicts). Si [to] ya iba en el grupo (era
+     *  otro miembro, al que el que evoluciona sustituye: solo puede haber uno), se queda UNA sola entrada,
+     *  la del lider si lo era, y se descarta su vida guardada. */
+    fun renameMember(context: Context, from: String, to: String, shiny: Boolean) {
+        val f = from.lowercase(); val t = to.lowercase()
+        val leader = currentSpecies(context)?.let { it to currentShiny(context) }
+        val comps = companions(context)
+        val hps = companionHps(context)
+        fun mapName(m: Pair<String, Boolean>) = if (m.first.equals(f, true) && m.second == shiny) t to shiny else m
+        val seen = HashSet<Pair<String, Boolean>>()
+        val newLeader = leader?.let { mapName(it) }
+        if (newLeader != null) seen.add(newLeader)
+        val keptComps = ArrayList<Pair<String, Boolean>>()
+        val keptHps = ArrayList<Float>()
+        comps.forEachIndexed { i, c ->
+            val m = mapName(c)
+            if (seen.add(m)) { keptComps.add(m); hps.getOrNull(i)?.let { keptHps.add(it) } }
+        }
+        val e = prefs(context).edit()
+        if (newLeader != null) e.putString(KEY_SPECIES, newLeader.first).putBoolean(KEY_SHINY, newLeader.second)
+        e.putString(KEY_COMPANIONS, companionsJson(keptComps))
+        if (hps.isNotEmpty() || keptHps.isNotEmpty()) e.putString(KEY_COMPANION_HPS, hpsJson(keptHps))
+        if (keptComps.size != comps.size) e.putInt(KEY_FRONT, 0).putString(KEY_FOLLOWER_TILES, "[]")
+        e.commit()
+    }
+
+    /** [name]/[shiny] deja de existir (solo el borrado de Debug): si era el explorador de la carrera en curso se abandona, si era el
+     *  pre-elegido durante el cierre se quita de la cola, y si era un compañero sale del grupo con su vida guardada. */
+    fun dropMember(context: Context, name: String, shiny: Boolean) {
+        if (status(context) == STATUS_IDLE) return
+        val leader = currentSpecies(context)
+        if (leader != null && leader.equals(name, true) && currentShiny(context) == shiny) {
+            if (isExploring(context)) abandon(context) else cancelQueuedExplorer(context)
+            return
+        }
+        val comps = companions(context)
+        val i = comps.indexOfFirst { it.first.equals(name, true) && it.second == shiny }
+        if (i < 0) return
+        val hps = companionHps(context).toMutableList()
+        if (i < hps.size) hps.removeAt(i)
+        prefs(context).edit()
+            .putString(KEY_COMPANIONS, companionsJson(comps.filterIndexed { j, _ -> j != i }))
+            .putString(KEY_COMPANION_HPS, hpsJson(hps))
+            .putInt(KEY_FRONT, 0).putString(KEY_FOLLOWER_TILES, "[]")
+            .commit()
+    }
+
+    /** Cuantos compañeros puede llevar el lider segun el nivel de entrenador (maximo guardado). */
+    fun maxCompanions(context: Context): Int = ExplorerPartyRules.maxCompanions(PetState.trainerLevelMaxFresh(context))
+
+    /** De los compañeros [wanted], los que SIGUEN pudiendo ir con [leader] (sin repetidos, y como mucho
+     *  los que permite el nivel de entrenador). Para reasignar sin pasar por el selector. */
+    fun usableCompanions(context: Context, leader: Pair<String, Boolean>, wanted: List<Pair<String, Boolean>>): List<Pair<String, Boolean>> =
+        wanted.map { it.first.lowercase() to it.second }.distinct()
+            .filter { (n, s) -> companionBlockReason(context, n, s, leader) == null }
+            .take(maxCompanions(context))
+
+    /** Por que [name]/[shiny] NO puede ir de compañero con [leader] (null = si puede). Un Pokemon solo
+     *  puede estar en un sitio a la vez: no puede ser el lider, ni el compañero activo del widget (ya
+     *  gana XP cuidandolo), ni estar en la guarderia. */
+    fun companionBlockReason(context: Context, name: String, shiny: Boolean, leader: Pair<String, Boolean>?): String? {
+        if (leader != null && leader.first.equals(name, ignoreCase = true) && leader.second == shiny) return "Es el explorador"
+        val base = name.lowercase()
+        if (!PetState.hasIndividual(context, base, shiny) || PetState.hasEvolvedAway(context, base, shiny)) return "No disponible"
+        if (base == PetState.currentPokemon(context) && shiny == PetState.isActiveShiny(context)) return "Es tu compañero activo"
+        if (PetState.isInNursery(context, base, shiny)) return "Está en la guardería"
+        return null
+    }
 
     fun isInCooldown(context: Context): Boolean = status(context) == STATUS_COOLDOWN
     fun cooldownUntil(context: Context): Long = prefs(context).getLong(KEY_COOLDOWN_UNTIL, 0L)
@@ -234,11 +373,12 @@ object DungeonState {
      *  explora hasta que pase KEY_COOLDOWN_UNTIL, sea quien sea el elegido). Si no se llama nunca,
      *  el comportamiento por defecto (species/shiny/autoRepeat de quien acaba de salir, intactos
      *  desde returnDefeated/returnFinished) sigue el bucle solo, exactamente como antes. */
-    fun queueNextExplorer(context: Context, name: String, shiny: Boolean, autoRepeat: Boolean) {
+    fun queueNextExplorer(context: Context, name: String, shiny: Boolean, autoRepeat: Boolean, companions: List<Pair<String, Boolean>> = emptyList()) {
         val editor = prefs(context).edit()
             .putString(KEY_SPECIES, name)
             .putBoolean(KEY_SHINY, shiny)
             .putBoolean(KEY_AUTO_REPEAT, autoRepeat)
+            .putString(KEY_COMPANIONS, companionsJson(companions))
         resetLoopAggregate(editor) // eleccion nueva explicita - no continua el resumen de quien estaba antes
         editor.apply()
     }
@@ -255,18 +395,19 @@ object DungeonState {
             val label = name?.let { PetState.displayLabel(it) } ?: "Tu Pokémon"
             val p = prefs(context)
             val runs = p.getInt(KEY_LOOP_RUNS, 0)
-            val xpTotal = p.getFloat(KEY_LOOP_XP_TOTAL, 0f)
+            val xpTotal = p.getFloatSafe(KEY_LOOP_XP_TOTAL, 0f)
             val levelsTotal = p.getInt(KEY_LOOP_LEVELS_TOTAL, 0)
             val itemsTotal = p.getInt(KEY_LOOP_ITEMS_TOTAL, 0)
             val recordFloor = maxOf(bestFloor(context), p.getInt(KEY_LOOP_MAX_FLOOR, 0))
             val summary = "$label — modo continuo: $runs ${if (runs == 1) "carrera" else "carreras"}, no vuelve a entrar por decisión propia " +
-                "(récord: $recordFloor) · +${xpTotal.toInt()} XP total · " +
+                "(récord: $recordFloor) · +${DungeonSimulator.formatXpAmount(xpTotal)} XP total · " +
                 "$levelsTotal ${if (levelsTotal == 1) "nivel" else "niveles"} · $itemsTotal objetos recogidos"
             p.edit().putString(KEY_LAST_RUN_SUMMARY, summary).apply()
         }
         prefs(context).edit()
             .putString(KEY_SPECIES, "")
             .putBoolean(KEY_AUTO_REPEAT, false)
+            .putString(KEY_COMPANIONS, "[]")
             .apply()
     }
 
@@ -298,13 +439,13 @@ object DungeonState {
         val label = name?.let { PetState.displayLabel(it) } ?: "Tu Pokémon"
         val p = prefs(context)
         val runs = p.getInt(KEY_LOOP_RUNS, 0) + 1
-        val xpTotal = p.getFloat(KEY_LOOP_XP_TOTAL, 0f) + xpGained
+        val xpTotal = p.getFloatSafe(KEY_LOOP_XP_TOTAL, 0f) + xpGained
         val levelsTotal = p.getInt(KEY_LOOP_LEVELS_TOTAL, 0) + levelsGained
         val itemsTotal = p.getInt(KEY_LOOP_ITEMS_TOTAL, 0) + itemsCollected
         val maxFloor = maxOf(p.getInt(KEY_LOOP_MAX_FLOOR, 0), floorReached)
         val recordFloor = maxOf(bestFloor(context), maxFloor)
         val summary = "$label — modo continuo: $runs ${if (runs == 1) "carrera" else "carreras"}, $verbClause " +
-            "(récord: $recordFloor) · +${xpTotal.toInt()} XP total · " +
+            "(récord: $recordFloor) · +${DungeonSimulator.formatXpAmount(xpTotal)} XP total · " +
             "$levelsTotal ${if (levelsTotal == 1) "nivel" else "niveles"} · $itemsTotal objetos recogidos"
         p.edit()
             .putInt(KEY_LOOP_RUNS, runs)
@@ -317,8 +458,8 @@ object DungeonState {
     }
 
     fun runStartLevel(context: Context): Int = prefs(context).getInt(KEY_RUN_START_LEVEL, 1)
-    fun runStartXp(context: Context): Float = prefs(context).getFloat(KEY_RUN_START_XP, 0f)
-    fun runXpGained(context: Context): Float = prefs(context).getFloat(KEY_RUN_XP_GAINED, 0f)
+    fun runStartXp(context: Context): Float = prefs(context).getFloatSafe(KEY_RUN_START_XP, 0f)
+    fun runXpGained(context: Context): Float = prefs(context).getFloatSafe(KEY_RUN_XP_GAINED, 0f)
     fun runItemsCollected(context: Context): Int = prefs(context).getInt(KEY_RUN_ITEMS_COLLECTED, 0)
 
     /** Nivel resultante de aplicar el XP acumulado en esta carrera (runXpGained) sobre el XP con
@@ -351,10 +492,10 @@ object DungeonState {
         prefs(context).edit().putInt(KEY_RUN_ITEMS_COLLECTED, value).apply()
     }
 
-    fun combatBuffAtk(context: Context): Float = prefs(context).getFloat(KEY_BUFF_ATK, 1f)
-    fun combatBuffDef(context: Context): Float = prefs(context).getFloat(KEY_BUFF_DEF, 1f)
-    fun combatBuffSpd(context: Context): Float = prefs(context).getFloat(KEY_BUFF_SPD, 1f)
-    fun combatBuffAcc(context: Context): Float = prefs(context).getFloat(KEY_BUFF_ACC, 0f)
+    fun combatBuffAtk(context: Context): Float = prefs(context).getFloatSafe(KEY_BUFF_ATK, 1f)
+    fun combatBuffDef(context: Context): Float = prefs(context).getFloatSafe(KEY_BUFF_DEF, 1f)
+    fun combatBuffSpd(context: Context): Float = prefs(context).getFloatSafe(KEY_BUFF_SPD, 1f)
+    fun combatBuffAcc(context: Context): Float = prefs(context).getFloatSafe(KEY_BUFF_ACC, 0f)
 
     /** Sustituye el buff activo (nunca se acumula con uno anterior sin consumir). */
     fun setCombatBuff(context: Context, atk: Float = 1f, def: Float = 1f, spd: Float = 1f, acc: Float = 0f) {
@@ -494,15 +635,25 @@ object DungeonState {
      *  DungeonSimulator.resolveCooldownIfReady): entonces NO se reinician los acumulados de la
      *  sesion. Una asignacion manual desde el selector (valor por defecto, false) SIEMPRE empieza
      *  una sesion nueva, aunque autoRepeat sea true. */
-    fun assign(context: Context, name: String, shiny: Boolean, hp: Int, startXp: Float, autoRepeat: Boolean = false, continuingLoop: Boolean = false) {
+    fun assign(
+        context: Context, name: String, shiny: Boolean, hp: Int, startXp: Float, autoRepeat: Boolean = false, continuingLoop: Boolean = false,
+        companions: List<Pair<String, Boolean>> = emptyList()
+    ) {
         // Log de diagnostico - unico sitio donde arranca una carrera (picker manual en
         // DungeonActivity y la reasignacion automatica de resolveCooldownIfReady pasan los dos
         // por aqui), asi que basta un log aqui para cubrir ambos caminos sin duplicar nada.
         val level = PetState.levelOf(context, startXp, name)
-        DebugLog.log(context, "mazmorra: entra ${PetState.displayLabel(name)}${if (shiny) " ✨" else ""} nivel $level - modo ${if (autoRepeat) "continuo" else "único"}")
+        DebugLog.log(context, "mazmorra: entra ${PetState.displayLabel(name)}${if (shiny) " ✨" else ""} nivel $level - modo ${if (autoRepeat) "continuo" else "único"}" +
+            if (companions.isEmpty()) "" else " con ${companions.size} compañero(s): ${companions.joinToString { PetState.displayLabel(it.first) }}")
         val editor = prefs(context).edit()
             .putString(KEY_SPECIES, name)
             .putBoolean(KEY_SHINY, shiny)
+            .putString(KEY_COMPANIONS, companionsJson(companions))
+            // Cada compañero empieza con su vida completa (segun su propio nivel), igual que el explorador.
+            .putString(KEY_COMPANION_HPS, hpsJson(companions.map { DungeonSimulator.maxHp(context, it.first, it.second).toFloat() }))
+            // Carrera nueva: delante va el lider y los compañeros aun sin colocar (el simulador los coloca al empezar).
+            .putInt(KEY_FRONT, 0)
+            .putString(KEY_FOLLOWER_TILES, "[]")
             .putInt(KEY_FLOOR, 1)
             .putFloat(KEY_HP, hp.toFloat())
             .putString(KEY_STATUS, STATUS_EXPLORING)
@@ -513,6 +664,12 @@ object DungeonState {
             .putInt(KEY_RUN_ITEMS_COLLECTED, 0)
             .putInt(KEY_STEPS_SINCE_PASSIVE_HEAL, 0)
             .putBoolean(KEY_AUTO_REPEAT, autoRepeat)
+            // La carrera empieza AHORA: sin esto, KEY_LAST_TICK_AT se quedaba con el valor del
+            // cooldown anterior (era el momento en que EMPEZO el cierre), y cualquier puesta al dia
+            // lanzada antes del primer ciclo (abrir la app, tocar el widget...) tomaba todo ese
+            // cierre por tiempo explorando perdido y simulaba la carrera entera de golpe - bug real
+            // visto el 2026-10-15: Charcadet cayo en el piso 6 al instante y empezo otro cooldown.
+            .putLong(KEY_LAST_TICK_AT, System.currentTimeMillis())
         if (!continuingLoop) resetLoopAggregate(editor)
         editor.apply()
         clearCombatBuffs(context)
@@ -544,7 +701,7 @@ object DungeonState {
             return
         }
         val summary = "$label vuelve de la mazmorra por decisión propia (piso $floor, mejor: ${maxOf(bestFloor(context), floor)}) · " +
-            "+${runXpGained(context).toInt()} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
+            "+${DungeonSimulator.formatXpAmount(runXpGained(context))} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
             "${runItemsCollected(context)} objetos recogidos"
         prefs(context).edit()
             .putInt(KEY_FLOOR, 1)
@@ -556,7 +713,7 @@ object DungeonState {
             .apply()
     }
 
-    fun updateProgress(context: Context, floor: Int, hp: Float) {
+    fun updateProgress(context: Context, floor: Int, hp: Float, companionHps: List<Float>? = null) {
         val clampedFloor = floor.coerceIn(1, MAX_FLOOR)
         // Log de diagnostico (pedido explicito del usuario: "logs solo de la dungeon... los
         // pisos, cuanto tarda en completarlos") - unico sitio donde se persiste un cambio de piso
@@ -565,12 +722,13 @@ object DungeonState {
         // el tiempo por piso se lee restando dos lineas consecutivas sin guardar ningun reloj
         // nuevo aqui.
         if (clampedFloor > currentFloor(context)) DebugLog.log(context, "mazmorra: piso $clampedFloor")
-        prefs(context).edit()
+        val editor = prefs(context).edit()
             .putInt(KEY_FLOOR, clampedFloor)
             .putFloat(KEY_HP, hp.coerceAtLeast(0f))
             .putInt(KEY_BEST_FLOOR, maxOf(bestFloor(context), clampedFloor))
             .putLong(KEY_LAST_TICK_AT, System.currentTimeMillis())
-            .apply()
+        if (companionHps != null) editor.putString(KEY_COMPANION_HPS, hpsJson(companionHps.map { it.coerceAtLeast(0f) }))
+        editor.apply()
     }
 
     /** Derrota: vuelve sano y salvo (nada de lo ya ganado de forma permanente - niveles reales
@@ -584,7 +742,7 @@ object DungeonState {
         val label = name?.let { PetState.displayLabel(it) } ?: "Tu Pokémon"
         val levelsGained = (simulatedLevel(context) - runStartLevel(context)).coerceAtLeast(0)
         val summary = "$label cayó en el piso $floor (mejor: ${maxOf(bestFloor(context), floor)}) · " +
-            "+${runXpGained(context).toInt()} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
+            "+${DungeonSimulator.formatXpAmount(runXpGained(context))} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
             "${runItemsCollected(context)} objetos recogidos"
         prefs(context).edit()
             .putInt(KEY_FLOOR, 1)
@@ -603,7 +761,7 @@ object DungeonState {
         val label = name?.let { PetState.displayLabel(it) } ?: "Tu Pokémon"
         val levelsGained = (simulatedLevel(context) - runStartLevel(context)).coerceAtLeast(0)
         val summary = "¡$label completó la mazmorra entera! · " +
-            "+${runXpGained(context).toInt()} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
+            "+${DungeonSimulator.formatXpAmount(runXpGained(context))} XP · $levelsGained ${if (levelsGained == 1) "nivel" else "niveles"} · " +
             "${runItemsCollected(context)} objetos recogidos"
         prefs(context).edit()
             .putInt(KEY_FLOOR, 1)
@@ -612,5 +770,127 @@ object DungeonState {
             .putLong(KEY_LAST_TICK_AT, System.currentTimeMillis())
             .putString(KEY_LAST_RUN_SUMMARY, summary)
             .apply()
+    }
+
+    // ==================== AUTOCOMPROBACION (adb) ====================
+
+    private fun restorePrefs(p: android.content.SharedPreferences, snap: Map<String, Any?>) {
+        val e = p.edit().clear()
+        for ((key, v) in snap) when (v) {
+            is String -> e.putString(key, v)
+            is Int -> e.putInt(key, v)
+            is Long -> e.putLong(key, v)
+            is Float -> e.putFloat(key, v)
+            is Boolean -> e.putBoolean(key, v)
+            is Set<*> -> @Suppress("UNCHECKED_CAST") e.putStringSet(key, v as Set<String>)
+        }
+        e.commit()
+    }
+
+    /** SOLO PARA ADB (ver PokeWidgetProvider.ACTION_DEBUG_PARTY_CHECK): prueba con datos reales los
+     *  compañeros de la mazmorra - bloqueos, reparto de XP a partes iguales por el MISMO camino que
+     *  stepOnce, asignacion con grupo, cierre + bucle conservando/filtrando al grupo, cancelacion - y lo
+     *  deja TODO como estaba. Si hay una carrera REAL en curso, la sustituye unos segundos por la de
+     *  prueba (con el cerrojo del simulador cogido, para que el servicio no la toque) y al final
+     *  restaura el estado entero de la mazmorra tal cual estaba. El nivel de entrenador se fuerza a 25
+     *  durante la prueba para tener los dos compañeros. */
+    fun debugPartySelfTest(context: Context): String = synchronized(DungeonSimulator) {
+        val nl = System.lineSeparator()
+        val sb = StringBuilder()
+        fun check(label: String, ok: Boolean, detail: String = "") {
+            sb.append("$label: ${if (ok) "OK" else "FALLO"}${if (detail.isNotEmpty()) " ($detail)" else ""}").append(nl)
+        }
+        val p = prefs(context)
+        val snapshot = HashMap(p.all)
+        val rawLevelBefore = PetState.debugRawTrainerLevelMax(context)
+        PetState.debugSetTrainerLevelMax(context, maxOf(rawLevelBefore ?: 1, ExplorerPartyRules.SECOND_COMPANION_LEVEL))
+        sb.append("estado inicial: ${status(context)} (lider real: ${currentSpecies(context)}, compañeros reales: ${companions(context).size}); compañeros permitidos durante la prueba: ${maxCompanions(context)}").append(nl)
+
+        val active = PetState.currentPokemon(context) to PetState.isActiveShiny(context)
+        val realParty = party(context).map { it.first.lowercase() to it.second }
+        val candidates = PetState.ownedIndividuals(context).filter { (n, sh) ->
+            (n to sh) != active && (n to sh) !in realParty && !PetState.isInNursery(context, n, sh) &&
+                (PetState.levelForPokemon(context, n, sh) ?: 100) < 100
+        }
+        if (candidates.size < 3) {
+            PetState.debugSetTrainerLevelMax(context, rawLevelBefore)
+            return@synchronized sb.append("no hay tres Pokemon libres para probar").toString()
+        }
+        val (a, b, c) = candidates
+        val xps = listOf(a, b, c).associateWith { PetState.rawStats(context, it.first, it.second)?.xp ?: 0f }
+        sb.append("prueba con lider ${a.first}, compañeros ${b.first} y ${c.first}").append(nl)
+        try {
+            // --- bloqueos
+            check("no puede acompañarse a si mismo", companionBlockReason(context, a.first, a.second, a) == "Es el explorador")
+            check("el compañero activo no puede ir", companionBlockReason(context, active.first, active.second, a)?.contains("activo") == true)
+            check("un Pokemon libre puede ir", companionBlockReason(context, b.first, b.second, a) == null)
+            val usable = usableCompanions(context, a, listOf(b, b, a, c, active))
+            check("usableCompanions filtra repetidos, lider y activo, y respeta el tope", usable == listOf(b, c), usable.toString())
+
+            // --- asignar con grupo
+            assign(context, a.first, a.second, DungeonSimulator.maxHp(context, a.first, a.second), xps.getValue(a), companions = usable)
+            check("asignar con grupo", status(context) == STATUS_EXPLORING && party(context) == listOf(a, b, c), party(context).toString())
+            check("isInParty (lider y compañeros)", isInParty(context, a.first, a.second) && isInParty(context, b.first, b.second) && isInParty(context, c.first, c.second))
+            val reason = PetState.nurseryBlockReason(context, c.first, c.second)
+            check("la guarderia no admite a un compañero de mazmorra", reason == "Está en la mazmorra", reason.toString())
+
+            // --- reparto de XP (el mismo camino que stepOnce)
+            val run = DungeonSimulator.loadRunState(context)
+            check("el RunState lleva a los compañeros", run != null && run.companions == listOf(b, c))
+            if (run != null) {
+                fun xp(x: Pair<String, Boolean>) = PetState.rawStats(context, x.first, x.second)?.xp ?: 0f
+                val before = listOf(a, b, c).map { xp(it) }
+                val runXpBefore = run.runXp
+                val share = DungeonSimulator.distributeCandyXp(context, a.first, a.second, run, 30f)
+                val after = listOf(a, b, c).map { xp(it) }
+                val gains = after.zip(before) { x, y -> x - y }
+                check("30 XP entre tres: 10 a cada uno", share == 10f && gains.all { Math.abs(it - 10f) < 0.05f }, "ganancias=$gains")
+                check("el XP de la carrera suma solo la parte del lider", Math.abs(run.runXp - runXpBefore - 10f) < 1e-4f)
+                // Sin compañeros, todo para el lider.
+                val solo = DungeonSimulator.RunState(run.floor, run.hp, run.map, run.px, run.py)
+                val leaderBefore = xp(a)
+                val soloShare = DungeonSimulator.distributeCandyXp(context, a.first, a.second, solo, 30f)
+                check("sin compañeros no se reparte nada", soloShare == 30f && Math.abs(xp(a) - leaderBefore - 30f) < 0.05f)
+                // Un compañero caido no cobra: el reparto es solo entre los que siguen en pie (la copia en memoria
+                // del RunState no se guarda, asi que la carrera real no se toca).
+                run.setHp(2, 0f)
+                val b4 = listOf(a, b, c).map { xp(it) }
+                val deadShare = DungeonSimulator.distributeCandyXp(context, a.first, a.second, run, 30f)
+                val g2 = listOf(a, b, c).map { xp(it) }.zip(b4) { x, y -> x - y }
+                check("un compañero caido no cobra XP", deadShare == 15f && Math.abs(g2[0] - 15f) < 0.05f && Math.abs(g2[1] - 15f) < 0.05f && Math.abs(g2[2]) < 0.05f, "ganancias=$g2")
+            }
+
+            // --- un ciclo de fondo con grupo
+            DungeonSimulator.runTick(context)
+            check("runTick con grupo sigue explorando o cierra sin romperse", status(context) != STATUS_IDLE || lastRunSummary(context) != null)
+
+            // --- cierre: el grupo sobrevive y se puede cambiar durante la espera
+            if (!isInCooldown(context)) {
+                if (!isExploring(context)) assign(context, a.first, a.second, DungeonSimulator.maxHp(context, a.first, a.second), xps.getValue(a), companions = usable)
+                startCooldown(context, 5, 600_000L)
+            }
+            check("cierre conserva al grupo", isInCooldown(context) && companions(context) == listOf(b, c) && isInParty(context, c.first, c.second))
+            queueNextExplorer(context, a.first, a.second, false, listOf(b))
+            check("queueNextExplorer cambia los compañeros", companions(context) == listOf(b))
+            rewriteCooldownUntil(context, System.currentTimeMillis() - 1000L)
+            DungeonSimulator.resolveCooldownIfReady(context)
+            check("el cierre vencido reasigna con el grupo elegido", isExploring(context) && party(context) == listOf(a, b), party(context).toString())
+
+            // --- cancelar la entrada durante un cierre limpia al grupo
+            startCooldown(context, 5, 600_000L)
+            cancelQueuedExplorer(context)
+            check("cancelar la entrada quita al grupo", companions(context).isEmpty() && currentSpecies(context) == null)
+            rewriteCooldownUntil(context, System.currentTimeMillis() - 1000L)
+            DungeonSimulator.resolveCooldownIfReady(context)
+            check("sin nadie en cola reabre en IDLE", status(context) == STATUS_IDLE && !isInParty(context, b.first, b.second))
+        } finally {
+            // Restaurar: toda la mazmorra tal cual estaba, XP de los tres, nivel de entrenador guardado.
+            restorePrefs(p, snapshot)
+            for ((who, xp) in xps) PetState.debugSetIndividualStats(context, who.first, who.second, xp = xp)
+            PetState.debugSetTrainerLevelMax(context, rawLevelBefore)
+            NotificationHelper.refreshDungeonNotification(context)
+        }
+        sb.append("restaurado: ${status(context)}, lider ${currentSpecies(context)}, compañeros reales ${companions(context).size}, nivel guardado ${PetState.debugRawTrainerLevelMax(context)} (antes $rawLevelBefore)")
+        sb.toString()
     }
 }

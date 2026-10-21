@@ -213,7 +213,7 @@ object DungeonSimulator {
      *  que pedia el usuario sale de esa sensibilidad del combate, no hace falta forzar el nivel
      *  del enemigo por encima del piso. La especie en si sigue eligiendose por PISO
      *  (pickEnemySpecies) - eso es progresion/variedad, no dificultad. */
-    fun generateMap(context: Context, floor: Int, playerSpecies: String): DungeonState.DungeonMap {
+    fun generateMap(context: Context, floor: Int, playerSpecies: String, teamSize: Int = 1): DungeonState.DungeonMap {
         if (floor % BOSS_FLOOR_INTERVAL == 0) return generateBossMap(context, floor, playerSpecies)
         val gridW = gridSizeFor(floor)
         val gridH = gridW
@@ -256,7 +256,9 @@ object DungeonSimulator {
         // nota piso a piso (1 en el piso 1, 5 en el piso 100) apoyandose en que el ajuste que de
         // verdad soluciono la dificultad fue otro (ENEMY_ATK_DAMPING, -35% de daño recibido) - a
         // reverificar con runBalanceSimulation que el objetivo de piso alcanzado se mantiene.
-        val enemyCount = (1 + floor / 25).coerceAtMost(5)
+        // Con equipo, mas enemigos (ExplorerPartyRules.enemyMultiplier: pedido del usuario - como con mas Pokemon se llega
+        // mas lejos, el piso trae mas enemigos segun cuantos entran).
+        val enemyCount = ExplorerPartyRules.scaledEnemyCount((1 + floor / 25).coerceAtMost(5), teamSize)
         val itemCount = (2 + floor / 8).coerceAtMost(10)
         val progress = (floor.toFloat() / DungeonState.MAX_FLOOR).coerceIn(0f, 1f)
         val enemies = ArrayList<DungeonState.EnemyTile>()
@@ -906,8 +908,85 @@ object DungeonSimulator {
      *  de DungeonState.simulatedLevel) para que stepOnce pueda correr sobre un RunState de mentira
      *  (runBalanceSimulation) sin tocar la carrera real. */
     private fun playerLevelFor(context: Context, species: String, shiny: Boolean, run: RunState): Int =
-        if (APPLY_REAL_CANDY_XP) PetState.levelOf(context, PetState.rawStats(context, species, shiny)?.xp ?: 0f, species)
-        else PetState.levelOf(context, run.runStartXp + run.runXp, species)
+        memberLevel(context, run, 0, species, shiny)
+
+    /** Nivel del miembro [i] del equipo (0 = explorador, 1.. = compañeros) en ESTE [run]: el real de su individuo
+     *  (PetState), salvo en un simulador de balance (applyRealXp = false), donde sale del XP de simulacion. */
+    private fun memberLevel(context: Context, run: RunState, i: Int, name: String, shiny: Boolean): Int =
+        if (APPLY_REAL_CANDY_XP && run.applyRealXp) PetState.levelOf(context, PetState.rawStats(context, name, shiny)?.xp ?: 0f, name)
+        else if (i == 0) PetState.levelOf(context, run.runStartXp + run.runXp, name)
+        else PetState.levelOf(context, run.companionSimXp.getOrElse(i - 1) { 0f }, name)
+
+    /** Equipo en orden: el explorador y despues sus compañeros. */
+    private fun teamOf(species: String, shiny: Boolean, run: RunState): List<Pair<String, Boolean>> = listOf(species to shiny) + run.companions
+
+    /** Vida maxima ACTUAL de cada miembro del equipo (segun su nivel en este [run]), en el orden del equipo. */
+    private fun teamMaxHps(context: Context, species: String, shiny: Boolean, run: RunState): List<Float> =
+        teamOf(species, shiny, run).mapIndexed { i, (n, s) -> maxHpForLevel(context, n, memberLevel(context, run, i, n, s)).toFloat() }
+
+    /** Casilla libre (transitable, sin nadie en [taken]) mas cercana a ([fromX],[fromY]) por camino real, o null si no
+     *  hay ninguna. Publica: la vista la usa para apartar a un sprite que quedaria encima de otro. */
+    fun nearestFreeTile(map: DungeonState.DungeonMap, fromX: Int, fromY: Int, taken: Set<Pair<Int, Int>>): Pair<Int, Int>? {
+        val seen = HashSet<Pair<Int, Int>>().apply { add(fromX to fromY) }
+        val queue = ArrayDeque<Pair<Int, Int>>().apply { add(fromX to fromY) }
+        while (queue.isNotEmpty()) {
+            val (cx, cy) = queue.removeFirst()
+            for (nb in walkableNeighbors(map, cx, cy)) {
+                if (!seen.add(nb)) continue
+                if (nb !in taken) return nb
+                queue.add(nb)
+            }
+        }
+        return null
+    }
+
+    /** Casillas iniciales de [count] compañeros junto al explorador en ([px],[py]): una fila de casillas transitables,
+     *  cada una pegada a la anterior y alejandose del explorador, sin repetir ninguna ni pisar a un enemigo (nunca dos
+     *  en la misma casilla - antes arrancaban todos encima del explorador). */
+    fun placeFollowers(map: DungeonState.DungeonMap, px: Int, py: Int, count: Int): List<Pair<Int, Int>> {
+        if (count <= 0) return emptyList()
+        val taken = HashSet<Pair<Int, Int>>().apply { add(px to py); map.enemies.forEach { add(it.x to it.y) } }
+        val result = ArrayList<Pair<Int, Int>>(count)
+        var cur = px to py
+        repeat(count) {
+            val next = walkableNeighbors(map, cur.first, cur.second).filter { it !in taken }.maxByOrNull { manhattan(it.first, it.second, px, py) }
+                ?: nearestFreeTile(map, px, py, taken)
+                ?: (px to py)   // mapa diminuto sin sitio: no deberia pasar
+            result.add(next); taken.add(next); cur = next
+        }
+        return result
+    }
+
+    /** Si los compañeros de [run] aun no tienen casilla (o no cuadra con el equipo), los coloca junto al explorador. */
+    fun ensureFollowerTiles(run: RunState) {
+        if (run.followerTiles.size != run.aliveFollowers()) run.followerTiles = placeFollowers(run.map, run.px, run.py, run.aliveFollowers())
+    }
+
+    /** Casilla de cada miembro (por indice del equipo) al EMPEZAR un combate contra [enemy]; (-1,-1) para los caidos. El enemigo y
+     *  los demas enemigos ocupan la suya, y nadie comparte casilla:
+     *  - si el enemigo piso la casilla de quien lidera, este se queda en la que acaba de dejar ([from]) y los demas en las
+     *    suyas de ANTES del paso ([followersBefore]);
+     *  - si alcanzo a un compañero (el que lidera ya esta en la suya), ese compañero se aparta a la casilla libre mas cercana;
+     *  - cualquiera que cayera en una casilla ocupada se corre a la libre mas cercana.
+     *  El de delante ocupa la casilla del que lidera y los demas en pie, las de la fila en orden. Es lo que se ve en pantalla. */
+    private fun combatStartTiles(run: RunState, enemy: DungeonState.EnemyTile, from: Pair<Int, Int>, followersBefore: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
+        val map = run.map
+        val enemyTile = enemy.x to enemy.y
+        val taken = HashSet<Pair<Int, Int>>().apply { add(enemyTile); for (e in map.enemies) add(e.x to e.y) }
+        fun place(want: Pair<Int, Int>): Pair<Int, Int> {
+            val p = if (want !in taken) want else (nearestFreeTile(map, want.first, want.second, taken) ?: want)
+            taken.add(p)
+            return p
+        }
+        val leaderEngaged = enemyTile == (run.px to run.py)
+        val front = run.frontIndex().coerceAtLeast(0)
+        val others = (0 until run.teamSize).filter { it != front && run.hpOf(it) > 0f }
+        val result = MutableList(run.teamSize) { -1 to -1 }
+        result[front] = place(if (leaderEngaged) from else (run.px to run.py))
+        val slots = if (leaderEngaged && followersBefore.size == others.size) followersBefore else run.followerTiles
+        others.forEachIndexed { j, member -> result[member] = place(slots.getOrNull(j) ?: result[front]) }
+        return result
+    }
 
     /** Potencia de ataque de UN golpe - antes era una formula sintetica IGUAL para cualquier
      *  especie (10 + nivel*2), pedido explicito del usuario: "revisar los ataques de cada Pokemon
@@ -977,17 +1056,55 @@ object DungeonSimulator {
         }
     }
 
-    private data class EncounterResult(val remainingHp: Float, val won: Boolean, val rounds: List<CombatRound>, val enemyMaxHp: Float)
+    /** Un miembro del equipo en un combate: especie, nivel, vida con la que EMPIEZA (0 = ya caido, no pelea) y casilla de salida. */
+    private class FighterInfo(
+        val name: String, val level: Int, val startHp: Float, val maxHp: Float = startHp, val startTile: Pair<Int, Int> = -1 to -1
+    )
+
+    /** [finalHps] = vida de cada miembro al acabar (mismo orden que el equipo); [won] = queda alguien en pie;
+     *  [startFront]/[endFront] = quien iba delante en el primer golpe y al acabar; [startTiles]/[endTiles] = casilla de
+     *  cada miembro al empezar y al acabar. */
+    private class EncounterResult(
+        val finalHps: List<Float>, val won: Boolean, val rounds: List<CombatRound>, val enemyMaxHp: Float,
+        val startFront: Int = 0, val endFront: Int = 0,
+        val startTiles: List<Pair<Int, Int>> = emptyList(), val endTiles: List<Pair<Int, Int>> = emptyList()
+    )
 
     /** Pura - ni lee ni escribe DungeonState (recibe nivel y buffs ya resueltos por el llamador,
-     *  ver comentario de [RunState]). */
+     *  ver comentario de [RunState]).
+     *
+     *  EQUIPO POSICIONAL (pedido explicito del usuario: "si el companero no puede pegar, no pega; si esta en una sala amplia
+     *  se mueve para acercarse al enemigo"): cada miembro tiene su casilla ([FighterInfo.startTile]) y el enemigo la suya.
+     *  Solo golpea quien esta PEGADO al enemigo (TeamCombatGeometry.canStrike: 8 direcciones, sin pegar a traves de la
+     *  esquina de una pared); el que no llega da un paso hacia el en cada asalto (TeamCombatGeometry.approachStep) y, en un
+     *  pasillo de una casilla de ancho, el que va detras del primero ni llega ni puede pasar: no pega. El enemigo golpea
+     *  a CUALQUIERA de los que tiene pegados (pedido del usuario: "que vayan a por cualquiera del equipo"): el primer golpe, al que
+     *  ha alcanzado ([engaged]); despues, al azar entre los pegados. Si no tiene a nadie al alcance, no golpea.
+     *  Si al de delante le queda menos del 25 % entra el compañero pegado a el con mas vida (se cambian de casilla); si
+     *  cae, el mejor que siga en pie. El que esta por debajo del 25 % no se acerca (se queda atras) salvo que sea el
+     *  unico. Con un solo miembro es exactamente el combate de siempre. El buff de objeto vale para todo el equipo.
+     *  [blocked] = casillas que no se pueden pisar al moverse (otros enemigos). */
     private fun resolveEncounter(
-        context: Context, species: String, playerLevel: Int, hpStart: Float, enemy: DungeonState.EnemyTile,
-        buffAtk: Float, buffDef: Float, buffSpd: Float, buffAcc: Float
+        context: Context, team: List<FighterInfo>, enemy: DungeonState.EnemyTile,
+        buffAtk: Float, buffDef: Float, buffSpd: Float, buffAcc: Float, startFront: Int = 0,
+        map: DungeonState.DungeonMap, blocked: Set<Pair<Int, Int>> = emptySet(), engaged: Int = -1
     ): EncounterResult {
-        val playerDef = (baseDefense(context, species) * buffDef).toInt()
-        val playerSpeed = (baseSpeed(context, species) * buffSpd).toInt()
-        var hp = hpStart
+        val hps = FloatArray(team.size) { team[it].startHp }
+        val maxHps = team.map { it.maxHp }
+        val tiles = Array(team.size) { team[it].startTile }
+        val enemyTile = enemy.x to enemy.y
+        val isWall = { x: Int, y: Int -> map.isWall(x, y) }
+        fun reaches(i: Int) = hps[i] > 0f && TeamCombatGeometry.canStrike(isWall, tiles[i].first, tiles[i].second, enemyTile.first, enemyTile.second)
+        fun touching(a: Int, b: Int) = abs(tiles[a].first - tiles[b].first) <= 1 && abs(tiles[a].second - tiles[b].second) <= 1
+        fun frac(i: Int) = hps[i] / maxHps[i].coerceAtLeast(1f)
+        fun snap() = tiles.toList()
+        // Quien va delante lo decide ExplorerPartyRules.nextFront: cede el puesto al bajar del 25 % de su vida, pero SOLO a
+        // alguien pegado a el (se cambian de casilla: el de atras ocupa su sitio pegado al enemigo); si cae, entra el mejor.
+        val front0 = startFront.coerceIn(0, team.size - 1)
+        var front = ExplorerPartyRules.nextFront(hps.toList(), maxHps, front0) { j -> j != front0 && touching(j, front0) }
+        if (front >= 0 && front != front0 && hps[front0] > 0f) { val t = tiles[front0]; tiles[front0] = tiles[front]; tiles[front] = t }
+        val firstFront = front.coerceAtLeast(0)
+        val startTiles = snap()
         val enemyDef = baseDefense(context, enemy.species)
         val enemySpeed = baseSpeed(context, enemy.species)
         // Jefe = mas HP y mas ataque que un enemigo normal del mismo nivel/especie - pedido
@@ -1006,38 +1123,90 @@ object DungeonSimulator {
         // resultado final.
         val roundLog = ArrayList<CombatRound>()
         var rounds = 0
+        // Mas miembros = combates mas largos (relevos y acercamientos): el tope de asaltos crece con el equipo.
+        val roundCap = 80 + 20 * (team.count { it.startHp > 0f } - 1).coerceAtLeast(0)
         // Orden estricto por velocidad: el mas rapido de los dos actua primero en cada asalto, y
         // si su golpe deja al otro a 0 HP, el asalto se corta ahi mismo - el que acaba de morir
         // NUNCA llega a golpear de vuelta. Pedido explicito del usuario: "si el mas rapido es
         // capaz de pegar y mata de un golpe al Pokemon, no deberia de ser capaz el otro Pokemon
         // de atacar" (revierte un fix anterior que garantizaba que los dos actuaran siempre
         // dentro de un mismo asalto - ese "intercambio real" es justo lo que ahora se reporta
-        // como bug, asi que se prioriza este pedido mas reciente).
-        while (hp > 0f && enemyHp > 0f && rounds < 30) {
+        // como bug, asi que se prioriza este pedido mas reciente). Con equipo: el orden lo marca
+        // la velocidad del que va DELANTE; en su turno atacan los miembros que llegan al enemigo.
+        var lastFront = firstFront   // el ultimo que fue delante de verdad (por si el golpe final tumba a todos)
+        var idleRounds = 0           // asaltos seguidos sin golpe ni paso (nadie llega a nadie): se corta para no quedarse en un bucle
+        var firstEnemyStrike = true  // el primer golpe del enemigo va al miembro al que ha llegado ([engaged]); los demas, a cualquiera que lo toque
+        while (front >= 0 && enemyHp > 0f && rounds < roundCap && idleRounds < 8) {
             rounds++
-            val order = if (playerSpeed >= enemySpeed) listOf(true, false) else listOf(false, true)
+            lastFront = front
+            var acted = false
+            val frontSpeed = (baseSpeed(context, team[front].name) * buffSpd).toInt()
+            val order = if (frontSpeed >= enemySpeed) listOf(true, false) else listOf(false, true)
             for (playerActs in order) {
                 if (playerActs) {
-                    val atk = attackRoll(context, species, enemy.species, playerLevel, enemyDef, playerSpeed, enemySpeed, atkMult = buffAtk, accBonus = buffAcc)
-                    if (atk != null) enemyHp = (enemyHp - atk.damage).coerceAtLeast(0f)
-                    roundLog.add(CombatRound(true, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hp, enemyHp))
+                    val inOrder = (listOf(front) + team.indices.filter { it != front }).filter { hps[it] > 0f }
+                    val strikers = inOrder.filter { reaches(it) }
+                    val anyHealthy = inOrder.any { frac(it) >= ExplorerPartyRules.FRONT_SWAP_FRACTION }
+                    // Quien no llega da un paso hacia el enemigo (salvo el que esta por debajo del 25 %, que se queda atras
+                    // mientras quede algun compañero sano; si todos estan tocados, todos pelean).
+                    var firstMover = -1
+                    for (i in inOrder) {
+                        if (reaches(i) || (frac(i) < ExplorerPartyRules.FRONT_SWAP_FRACTION && anyHealthy)) continue
+                        val occupied = HashSet<Pair<Int, Int>>(blocked).apply { add(enemyTile); for (j in team.indices) if (j != i && hps[j] > 0f) add(tiles[j]) }
+                        val step = TeamCombatGeometry.approachStep(isWall, tiles[i], enemyTile, occupied) ?: continue
+                        tiles[i] = step
+                        if (firstMover < 0) firstMover = i
+                    }
+                    if (firstMover >= 0) {
+                        roundLog.add(CombatRound(true, 0f, false, false, 1f, hps[firstMover], enemyHp, actor = firstMover, memberHpAfter = hps.toList(), front = front, tiles = snap(), move = true))
+                        acted = true
+                    }
+                    // Los que llegan al enemigo pegan: primero el que va delante y luego el resto, en el orden del grupo.
+                    for (i in strikers) {
+                        if (hps[i] <= 0f) continue
+                        if (enemyHp <= 0f) break
+                        val speed = (baseSpeed(context, team[i].name) * buffSpd).toInt()
+                        val atk = attackRoll(context, team[i].name, enemy.species, team[i].level, enemyDef, speed, enemySpeed, atkMult = buffAtk, accBonus = buffAcc)
+                        if (atk != null) enemyHp = (enemyHp - atk.damage).coerceAtLeast(0f)
+                        roundLog.add(CombatRound(true, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hps[i], enemyHp, actor = i, memberHpAfter = hps.toList(), front = front, tiles = snap()))
+                        acted = true
+                    }
                     if (enemyHp <= 0f) break
                 } else {
-                    val atk = attackRoll(context, enemy.species, species, enemy.level, playerDef, enemySpeed, playerSpeed, atkMult = enemyAtkMult)
-                    if (atk != null) hp = (hp - atk.damage).coerceAtLeast(0f)
-                    roundLog.add(CombatRound(false, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hp, enemyHp))
-                    if (hp <= 0f) break
+                    // El enemigo va a por CUALQUIERA del equipo que tenga pegado, no solo al de delante (pedido del usuario); un golpe a
+                    // un compañero cuenta igual que uno al lider, y todos siguen yendo a por el.
+                    val hit = ExplorerPartyRules.enemyStrikeTarget(team.indices.filter { reaches(it) }, if (firstEnemyStrike) engaged else -1)
+                    if (hit < 0) continue   // nadie a su alcance: este asalto no golpea
+                    firstEnemyStrike = false
+                    val hitDef = (baseDefense(context, team[hit].name) * buffDef).toInt()
+                    val hitSpeed = (baseSpeed(context, team[hit].name) * buffSpd).toInt()
+                    val atk = attackRoll(context, enemy.species, team[hit].name, enemy.level, hitDef, enemySpeed, hitSpeed, atkMult = enemyAtkMult)
+                    if (atk != null) hps[hit] = (hps[hit] - atk.damage).coerceAtLeast(0f)
+                    roundLog.add(CombatRound(false, atk?.damage ?: 0f, atk == null, atk?.critical == true, atk?.effectiveness ?: 1f, hps[hit], enemyHp, actor = hit, memberHpAfter = hps.toList(), front = front, tiles = snap()))
+                    acted = true
+                    // Cambio de delantero: si al de delante le queda menos del 25 % (o ha caido), entra otro - solo uno pegado a el
+                    // (se cambian de casilla); si el de delante cayo, el mejor que siga en pie.
+                    if (hit == front) {
+                        val old = front
+                        val cand = ExplorerPartyRules.nextFront(hps.toList(), maxHps, old) { j -> j != old && touching(j, old) }
+                        if (cand < 0) { front = -1; break }
+                        if (cand != old) {
+                            if (hps[old] > 0f) { val t = tiles[old]; tiles[old] = tiles[cand]; tiles[cand] = t }
+                            front = cand
+                        }
+                    } else if (hps.none { it > 0f }) { front = -1; break }
                 }
             }
+            idleRounds = if (acted) 0 else idleRounds + 1
         }
-        return EncounterResult(hp, hp > 0f, roundLog, enemyMaxHp)
+        return EncounterResult(hps.toList(), hps.any { it > 0f }, roundLog, enemyMaxHp, firstFront, if (front >= 0) front else lastFront, startTiles, snap())
     }
 
     /** 8 direcciones (pedido explicito del usuario: "los Pokemon se pueden pegar en diagonal, creo
      *  que ahora mismo no deja") - una diagonal solo cuenta como transitable si las DOS casillas
      *  cardinales contiguas tambien lo son (si no, se estaria "cortando" la esquina de una pared,
      *  atravesandola visualmente - regla estandar en juegos de rejilla). */
-    private fun walkableNeighbors(map: DungeonState.DungeonMap, x: Int, y: Int): List<Pair<Int, Int>> {
+    internal fun walkableNeighbors(map: DungeonState.DungeonMap, x: Int, y: Int): List<Pair<Int, Int>> {
         val n = !map.isWall(x, y - 1); val s = !map.isWall(x, y + 1)
         val w = !map.isWall(x - 1, y); val e = !map.isWall(x + 1, y)
         val result = ArrayList<Pair<Int, Int>>(8)
@@ -1060,54 +1229,80 @@ object DungeonSimulator {
      *  estan conectadas en cadena) y BFS lo encuentra sin fallo. Bug real reportado por el
      *  usuario ("el Pokemon se queda atascado girando"). Si ya esta en el destino, o el destino
      *  es inalcanzable (no deberia pasar nunca), se queda quieto. */
-    private fun bfsNextStep(map: DungeonState.DungeonMap, fromX: Int, fromY: Int, toX: Int, toY: Int): Pair<Int, Int> {
+    internal fun bfsNextStep(map: DungeonState.DungeonMap, fromX: Int, fromY: Int, toX: Int, toY: Int): Pair<Int, Int> {
         if (fromX == toX && fromY == toY) return fromX to fromY
-        fun idx(x: Int, y: Int) = y * map.width + x
-        val startIdx = idx(fromX, fromY); val targetIdx = idx(toX, toY)
-        val parent = HashMap<Int, Int>()
-        val visited = HashSet<Int>().apply { add(startIdx) }
-        val queue = ArrayDeque<Int>().apply { add(startIdx) }
+        // Mismo recorrido (mismo orden de vecinos que [walkableNeighbors]) y mismo resultado que el BFS con HashMap/HashSet de antes,
+        // pero con arrays y sin crear objetos por casilla: se llama una vez por enemigo y por paso, y en una puesta al dia de varios dias
+        // (decenas de miles de pasos) era lo que mas tiempo se llevaba (QaDungeon: 3 dias = ~1 min).
+        val w = map.width
+        val size = w * map.height
+        val startIdx = fromY * w + fromX; val targetIdx = toY * w + toX
+        if (startIdx !in 0 until size || targetIdx !in 0 until size) return fromX to fromY
+        val parent = IntArray(size) { UNVISITED }
+        val queue = IntArray(size)
+        var head = 0; var tail = 0
+        parent[startIdx] = startIdx
+        queue[tail++] = startIdx
         var found = false
-        while (queue.isNotEmpty()) {
-            val cur = queue.removeFirst()
+        while (head < tail) {
+            val cur = queue[head++]
             if (cur == targetIdx) { found = true; break }
-            val cx = cur % map.width; val cy = cur / map.width
-            for ((nx, ny) in walkableNeighbors(map, cx, cy)) {
-                val nIdx = idx(nx, ny)
-                if (visited.add(nIdx)) { parent[nIdx] = cur; queue.add(nIdx) }
-            }
+            val cx = cur % w; val cy = cur / w
+            val n = !map.isWall(cx, cy - 1); val s = !map.isWall(cx, cy + 1)
+            val ww = !map.isWall(cx - 1, cy); val e = !map.isWall(cx + 1, cy)
+            if (n && parent[cur - w] == UNVISITED) { parent[cur - w] = cur; queue[tail++] = cur - w }
+            if (s && parent[cur + w] == UNVISITED) { parent[cur + w] = cur; queue[tail++] = cur + w }
+            if (ww && parent[cur - 1] == UNVISITED) { parent[cur - 1] = cur; queue[tail++] = cur - 1 }
+            if (e && parent[cur + 1] == UNVISITED) { parent[cur + 1] = cur; queue[tail++] = cur + 1 }
+            if (n && ww && !map.isWall(cx - 1, cy - 1) && parent[cur - w - 1] == UNVISITED) { parent[cur - w - 1] = cur; queue[tail++] = cur - w - 1 }
+            if (n && e && !map.isWall(cx + 1, cy - 1) && parent[cur - w + 1] == UNVISITED) { parent[cur - w + 1] = cur; queue[tail++] = cur - w + 1 }
+            if (s && ww && !map.isWall(cx - 1, cy + 1) && parent[cur + w - 1] == UNVISITED) { parent[cur + w - 1] = cur; queue[tail++] = cur + w - 1 }
+            if (s && e && !map.isWall(cx + 1, cy + 1) && parent[cur + w + 1] == UNVISITED) { parent[cur + w + 1] = cur; queue[tail++] = cur + w + 1 }
         }
         if (!found) return fromX to fromY
         var cur = targetIdx
-        while (parent[cur] != startIdx && parent.containsKey(cur)) cur = parent[cur]!!
-        return (cur % map.width) to (cur / map.width)
+        while (parent[cur] != startIdx) cur = parent[cur]
+        return (cur % w) to (cur / w)
     }
+    private const val UNVISITED = -1
 
     /** Un unico BFS "en abanico" desde (fromX,fromY) a TODO el mapa alcanzable - da la distancia
      *  REAL de camino (respetando paredes) a cualquier casilla, y de que casilla vino (para poder
      *  reconstruir el primer paso hacia cualquier destino sin repetir el BFS por cada candidato). */
-    private class FloodFill(val width: Int, val dist: IntArray, val parent: IntArray)
+    internal class FloodFill(val width: Int, val dist: IntArray, val parent: IntArray)
 
     /** [blockX]/[blockY] (-1 por defecto = ninguna) - casilla a tratar como NO transitable SOLO
      *  para este calculo, sin tocar el mapa real. Usado para evitar que el camino mas corto a un
      *  objeto pase por la escalera de subida (ver decidePlayerStep). */
-    private fun floodFill(map: DungeonState.DungeonMap, fromX: Int, fromY: Int, blockX: Int = -1, blockY: Int = -1): FloodFill {
-        fun idx(x: Int, y: Int) = y * map.width + x
-        val dist = IntArray(map.width * map.height) { -1 }
-        val parent = IntArray(map.width * map.height) { -1 }
-        val startIdx = idx(fromX, fromY)
+    internal fun floodFill(map: DungeonState.DungeonMap, fromX: Int, fromY: Int, blockX: Int = -1, blockY: Int = -1): FloodFill {
+        // Mismo recorrido y orden de vecinos que [walkableNeighbors], sin crear una lista de pares por casilla: se calcula una o dos veces
+        // por PASO del explorador y era lo que mas pesaba en la puesta al dia (QaDungeon). El resultado (dist/parent) es identico.
+        val w = map.width
+        val size = w * map.height
+        val dist = IntArray(size) { -1 }
+        val parent = IntArray(size) { -1 }
+        val startIdx = fromY * w + fromX
         dist[startIdx] = 0
-        val queue = ArrayDeque<Int>().apply { add(startIdx) }
-        while (queue.isNotEmpty()) {
-            val cur = queue.removeFirst()
-            val cx = cur % map.width; val cy = cur / map.width
-            for ((nx, ny) in walkableNeighbors(map, cx, cy)) {
-                if (nx == blockX && ny == blockY) continue
-                val nIdx = idx(nx, ny)
-                if (dist[nIdx] == -1) { dist[nIdx] = dist[cur] + 1; parent[nIdx] = cur; queue.add(nIdx) }
-            }
+        val queue = IntArray(size)
+        var head = 0; var tail = 0
+        queue[tail++] = startIdx
+        val blockIdx = if (blockX >= 0 && blockY >= 0 && blockX < w && blockY < map.height) blockY * w + blockX else -1
+        while (head < tail) {
+            val cur = queue[head++]
+            val cx = cur % w; val cy = cur / w
+            val n = !map.isWall(cx, cy - 1); val s = !map.isWall(cx, cy + 1)
+            val ww = !map.isWall(cx - 1, cy); val e = !map.isWall(cx + 1, cy)
+            val d = dist[cur] + 1
+            if (n) { val i = cur - w; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (s) { val i = cur + w; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (ww) { val i = cur - 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (e) { val i = cur + 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (n && ww && !map.isWall(cx - 1, cy - 1)) { val i = cur - w - 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (n && e && !map.isWall(cx + 1, cy - 1)) { val i = cur - w + 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (s && ww && !map.isWall(cx - 1, cy + 1)) { val i = cur + w - 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
+            if (s && e && !map.isWall(cx + 1, cy + 1)) { val i = cur + w + 1; if (i != blockIdx && dist[i] == -1) { dist[i] = d; parent[i] = cur; queue[tail++] = i } }
         }
-        return FloodFill(map.width, dist, parent)
+        return FloodFill(w, dist, parent)
     }
 
     private fun realDistance(flood: FloodFill, x: Int, y: Int): Int? =
@@ -1197,9 +1392,12 @@ object DungeonSimulator {
      *  otra sala distinta nueva. [DungeonState.EnemyTile.targetRoomIdx] es donde se recuerda esto
      *  entre pasos - devuelve el paso Y el targetRoomIdx actualizado para que el llamador lo
      *  persista en el propio EnemyTile. */
-    private fun decideEnemyStep(map: DungeonState.DungeonMap, enemy: DungeonState.EnemyTile, px: Int, py: Int): Pair<Pair<Int, Int>, Int> {
-        if (manhattan(enemy.x, enemy.y, px, py) <= 3) {
-            return bfsNextStep(map, enemy.x, enemy.y, px, py) to enemy.targetRoomIdx
+    private fun decideEnemyStep(map: DungeonState.DungeonMap, enemy: DungeonState.EnemyTile, team: List<Pair<Int, Int>>): Pair<Pair<Int, Int>, Int> {
+        // Persigue al miembro del equipo MAS CERCANO (el que lidera o cualquiera de los que van detras), no solo al que lidera
+        // (ExplorerPartyRules.chaseTarget). Al alcanzar la casilla de un compañero el combate salta igual y pelean todos.
+        val chased = ExplorerPartyRules.chaseTarget(enemy.x to enemy.y, team)
+        if (chased != null) {
+            return bfsNextStep(map, enemy.x, enemy.y, team[chased].first, team[chased].second) to enemy.targetRoomIdx
         }
         if (map.rooms.size < 2) {
             // no hay entre que sala elegir - deambular localmente como antes (reserva).
@@ -1231,14 +1429,67 @@ object DungeonSimulator {
      *  DungeonState.addRunXp/incRunItemsCollected/combatBuff* en cada paso, lo que habria
      *  corrompido la carrera real en curso si se simulaba a la vez. */
     class RunState(
-        var floor: Int, var hp: Float, var map: DungeonState.DungeonMap, var px: Int, var py: Int,
+        var floor: Int, hp: Float, var map: DungeonState.DungeonMap, var px: Int, var py: Int,
         var runStartXp: Float = 0f, var runXp: Float = 0f, var itemsCollected: Int = 0,
         var buffAtk: Float = 1f, var buffDef: Float = 1f, var buffSpd: Float = 1f, var buffAcc: Float = 0f,
         // Regeneracion pasiva (pedido explicito del usuario: "que el pokemon se cure 1 ps cada 3
         // pasos") - cuenta pasos desde la ultima curacion pasiva, mismo sitio/motivo que
         // runXp/itemsCollected de arriba (vive en RunState para que stepOnce siga siendo puro).
-        var stepsSincePassiveHeal: Int = 0
-    )
+        var stepsSincePassiveHeal: Int = 0,
+        // XP total de caramelos/vitaminas repartida entre todo el equipo en esta carrera (solo informativo, para
+        // el simulador de balance: [runXp] es la parte del explorador).
+        var teamXp: Float = 0f,
+        // Compañeros que van con el explorador en ESTA carrera (ver DungeonState.companions): pelean
+        // junto a el (ver resolveEncounter) y se reparten a partes iguales el XP de caramelos/vitaminas
+        // entre los que siguen en pie. Vive en RunState (no se lee de DungeonState dentro de stepOnce)
+        // por el mismo motivo que runXp: stepOnce sigue puro y el simulador de balance, con un RunState
+        // de mentira, no toca nada real.
+        var companions: List<Pair<String, Boolean>> = emptyList(),
+        // Vida de cada compañero (mismo orden que [companions]); el explorador lleva la suya en [leaderHp].
+        companionHps: List<Float> = emptyList(),
+        // Quien va DELANTE ahora (indice del equipo: 0 = explorador, 1.. = compañeros). Cede el puesto al bajar de
+        // ExplorerPartyRules.FRONT_SWAP_FRACTION de su vida (ver nextFrontFor); sigue siendo el explorador (miembro 0)
+        // quien da nombre y nivel a la carrera, solo cambia quien abre el paso y recibe los golpes.
+        var front: Int = 0,
+        // Casilla de cada compañero (mismo orden que [companions]): van en fila detras de quien lidera (ver
+        // ExplorerPartyRules.followTheLeader). Estan en la SIMULACION (no solo en la vista) porque un enemigo que
+        // los alcanza tambien provoca el combate, y asi el fondo y la vista en vivo ven el mismo mundo.
+        // Vacio = aun sin colocar (stepOnce los coloca junto al explorador).
+        var followerTiles: List<Pair<Int, Int>> = emptyList()
+    ) {
+        /** Vida del explorador (miembro 0 del equipo). */
+        var leaderHp: Float = hp
+        val companionHps = ArrayList<Float>(companionHps).also { while (it.size < companions.size) it.add(0f) }
+        /** false = el RunState es de un simulador de balance: ni lee ni reparte XP real, los niveles salen de
+         *  [runStartXp]/[runXp] (explorador) y [companionSimXp] (compañeros). */
+        var applyRealXp: Boolean = true
+        /** XP actual de cada compañero SOLO en simulacion (applyRealXp = false). */
+        val companionSimXp = ArrayList<Float>()
+
+        // EQUIPO: miembro 0 = explorador, 1.. = compañeros. Pelea el primero que siga en pie (el "de delante");
+        // si cae, entra el siguiente. La carrera solo acaba cuando caen todos ([isDefeated]).
+        val teamSize: Int get() = 1 + companions.size
+        fun hpOf(i: Int): Float = if (i == 0) leaderHp else companionHps.getOrElse(i - 1) { 0f }
+        fun setHp(i: Int, v: Float) {
+            if (i == 0) leaderHp = v else if (i - 1 in companionHps.indices) companionHps[i - 1] = v
+        }
+        fun teamHps(): List<Float> = List(teamSize) { hpOf(it) }
+        fun setTeamHps(hps: List<Float>) { hps.forEachIndexed { i, v -> if (i < teamSize) setHp(i, v) } }
+        /** Indice del miembro que va delante: [front] mientras siga en pie; si ha caido, el primero con vida; -1 si no
+         *  queda ninguno. */
+        fun frontIndex(): Int =
+            if (front in 0 until teamSize && hpOf(front) > 0f) front
+            else (0 until teamSize).firstOrNull { hpOf(it) > 0f } ?: -1
+        fun isDefeated(): Boolean = frontIndex() < 0
+        /** Cuantos miembros siguen en pie. */
+        fun aliveCount(): Int = (0 until teamSize).count { hpOf(it) > 0f }
+        /** Cuantos van DETRAS de quien lidera (los que siguen en pie menos el de delante): [followerTiles] tiene una casilla por cada uno. */
+        fun aliveFollowers(): Int = (aliveCount() - 1).coerceAtLeast(0)
+        /** Vida del que va delante (0 si no queda nadie): las curaciones y la regeneracion "de delante" usan esta. */
+        var hp: Float
+            get() { val f = frontIndex(); return if (f < 0) 0f else hpOf(f) }
+            set(v) { val f = frontIndex(); if (f >= 0) setHp(f, v) }
+    }
 
     data class EnemyMove(val id: Int, val species: String, val fromX: Int, val fromY: Int, val toX: Int, val toY: Int)
 
@@ -1253,14 +1504,32 @@ object DungeonSimulator {
      *  tiene sentido cuando el golpe no ha fallado. */
     data class CombatRound(
         val playerActs: Boolean, val damage: Float, val missed: Boolean, val critical: Boolean,
-        val effectiveness: Float, val playerHpAfter: Float, val enemyHpAfter: Float
+        val effectiveness: Float, val playerHpAfter: Float, val enemyHpAfter: Float,
+        // EQUIPO (el explorador y sus compañeros pelean juntos, ver resolveEncounter): [actor] = indice del miembro
+        // (0 = explorador, 1.. = compañeros) que ATACA (playerActs) o que RECIBE el golpe (el que va delante, si no);
+        // [memberHpAfter] = vida de TODOS los miembros tras este golpe, en el mismo orden. [playerHpAfter] sigue siendo
+        // la del miembro implicado. Con un solo miembro: actor 0 y una lista de uno.
+        val actor: Int = 0, val memberHpAfter: List<Float> = listOf(playerHpAfter),
+        // Quien iba DELANTE mientras se jugaba este golpe (el que recibe los golpes del enemigo). Cambia entre golpes
+        // cuando el de delante baja del 25 % de su vida (ExplorerPartyRules.nextFront).
+        val front: Int = 0,
+        // POSICIONES: casilla de cada miembro (mismo orden que el equipo) tras este suceso, y si el suceso es solo un
+        // MOVIMIENTO (los que no llegan al enemigo dan un paso hacia el: no hay golpe, daño ni texto). Un miembro caido
+        // conserva su ultima casilla. Vacio = combate sin posiciones (los de antes de esta version).
+        val tiles: List<Pair<Int, Int>> = emptyList(), val move: Boolean = false
     )
 
     sealed class Outcome {
         object Empty : Outcome()
         data class Combat(
             val enemy: DungeonState.EnemyTile, val won: Boolean, val rounds: List<CombatRound>,
-            val startHp: Float, val enemyMaxHp: Float
+            val startHp: Float, val enemyMaxHp: Float,
+            // Vida de todos los miembros del equipo al EMPEZAR el combate (la vista la anima golpe a golpe).
+            val startHps: List<Float> = listOf(startHp),
+            // Quien iba delante en el primer golpe (ya con el cambio por poca vida aplicado) y el que queda delante al acabar.
+            val startFront: Int = 0, val endFront: Int = 0,
+            // Casilla de cada miembro (mismo orden que el equipo) al EMPEZAR el combate; los caidos de salida llevan (-1,-1).
+            val startTiles: List<Pair<Int, Int>> = emptyList()
         ) : Outcome()
         data class Pickup(val item: DungeonState.ItemTile, val effectText: String) : Outcome()
         data class Stairs(val newFloor: Int) : Outcome()
@@ -1271,7 +1540,14 @@ object DungeonSimulator {
         // combates ganados" aunque el jugador muriera constantemente, porque el UNICO combate que
         // de verdad determinaba el final de cada carrera (un KO mutuo, ganado Y perdido a la vez)
         // quedaba fuera del recuento por completo.
-        data class Defeated(val enemyAlsoDefeated: Boolean, val rounds: List<CombatRound>) : Outcome()
+        // El combate FATAL lleva tambien los datos para ANIMARLO (enemigo, vidas y casillas de salida): la vista lo reproduce
+        // entero antes de cerrar la carrera, asi se ve caer a todo el equipo (antes se cerraba al instante y, con
+        // compañeros, parecia que el ultimo seguia vivo).
+        data class Defeated(
+            val enemyAlsoDefeated: Boolean, val rounds: List<CombatRound>,
+            val enemy: DungeonState.EnemyTile? = null, val enemyMaxHp: Float = 0f, val startHps: List<Float> = emptyList(),
+            val startFront: Int = 0, val startTiles: List<Pair<Int, Int>> = emptyList()
+        ) : Outcome()
         object Finished : Outcome() // llego al piso MAX_FLOOR - fin de la mazmorra
     }
 
@@ -1297,13 +1573,24 @@ object DungeonSimulator {
         val buffSpd = DungeonState.combatBuffSpd(context)
         val buffAcc = DungeonState.combatBuffAcc(context)
         val stepsSincePassiveHeal = DungeonState.stepsSincePassiveHeal(context)
+        val companions = DungeonState.companions(context)
+        // Vida guardada de cada compañero (si falta alguna, por una carrera guardada antes de que pelearan, se
+        // da por completa).
+        val savedHps = DungeonState.companionHps(context)
+        val companionHps = companions.mapIndexed { i, (n, s) -> savedHps.getOrNull(i) ?: maxHp(context, n, s).toFloat() }
+        val front = DungeonState.frontMember(context).coerceIn(0, companions.size)
+        val savedTiles = DungeonState.followerTiles(context)
+        // Los compañeros que siguen en pie detras del de delante: una casilla por cada uno (los caidos ya no ocupan).
+        val followersAlive = (((if (hp > 0f) 1 else 0) + companionHps.count { it > 0f }) - 1).coerceAtLeast(0)
         return if (existingMap != null) {
             val (px, py) = DungeonState.playerPos(context)
-            RunState(floor, hp, existingMap, px, py, runStartXp, runXp, itemsCollected, buffAtk, buffDef, buffSpd, buffAcc, stepsSincePassiveHeal)
+            // Casillas guardadas: solo valen si cuadran con el equipo y siguen siendo suelo del mapa (si no, se colocan de nuevo).
+            val tiles = savedTiles.takeIf { t -> t.size == followersAlive && t.all { !existingMap.isWall(it.first, it.second) } } ?: emptyList()
+            RunState(floor, hp, existingMap, px, py, runStartXp, runXp, itemsCollected, buffAtk, buffDef, buffSpd, buffAcc, stepsSincePassiveHeal, companions = companions, companionHps = companionHps, front = front, followerTiles = tiles)
         } else {
-            val map = generateMap(context, floor, playerSpecies)
+            val map = generateMap(context, floor, playerSpecies, 1 + companions.size)
             DungeonState.saveMap(context, floor, map, map.startX, map.startY)
-            RunState(floor, hp, map, map.startX, map.startY, runStartXp, runXp, itemsCollected, buffAtk, buffDef, buffSpd, buffAcc, stepsSincePassiveHeal)
+            RunState(floor, hp, map, map.startX, map.startY, runStartXp, runXp, itemsCollected, buffAtk, buffDef, buffSpd, buffAcc, stepsSincePassiveHeal, companions = companions, companionHps = companionHps, front = front, followerTiles = placeFollowers(map, map.startX, map.startY, followersAlive))
         }
     }
 
@@ -1312,12 +1599,13 @@ object DungeonSimulator {
      *  balance (runBalanceSimulation) - por eso esta es segura de correr en paralelo sin tocar la
      *  carrera real. */
     fun persist(context: Context, run: RunState) {
-        DungeonState.updateProgress(context, run.floor, run.hp)
+        DungeonState.updateProgress(context, run.floor, run.leaderHp, run.companionHps)
         DungeonState.saveMap(context, run.floor.coerceAtMost(DungeonState.MAX_FLOOR), run.map, run.px, run.py)
         DungeonState.setRunXpGained(context, run.runXp)
         DungeonState.setRunItemsCollected(context, run.itemsCollected)
         DungeonState.setCombatBuff(context, run.buffAtk, run.buffDef, run.buffSpd, run.buffAcc)
         DungeonState.setStepsSincePassiveHeal(context, run.stepsSincePassiveHeal)
+        DungeonState.saveTeamLayout(context, run.front, run.followerTiles)
     }
 
     /** SOLO PRUEBAS - pedido explicito del usuario: "haz una forma de que puedas forzar que mi
@@ -1332,9 +1620,10 @@ object DungeonSimulator {
         val playerSpecies = DungeonState.currentSpecies(context) ?: return
         val floor = targetFloor.coerceIn(1, DungeonState.MAX_FLOOR)
         run.floor = floor
-        run.map = generateMap(context, floor, playerSpecies)
+        run.map = generateMap(context, floor, playerSpecies, 1 + run.companions.size)
         run.px = run.map.startX
         run.py = run.map.startY
+        run.followerTiles = placeFollowers(run.map, run.px, run.py, run.aliveFollowers())
         persist(context, run)
     }
 
@@ -1345,8 +1634,13 @@ object DungeonSimulator {
     fun stepOnce(context: Context, species: String, shiny: Boolean, run: RunState): StepResult {
         if (run.floor > DungeonState.MAX_FLOOR) return StepResult(run.px, run.py, run.px, run.py, emptyList(), Outcome.Finished)
         val fromX = run.px; val fromY = run.py
+        ensureFollowerTiles(run)
+        val followersBefore = run.followerTiles   // donde estaban los compañeros antes de este paso (para colocar el combate)
         val (nx, ny) = decidePlayerStep(run.map, run.px, run.py)
         run.px = nx; run.py = ny
+        // Los compañeros van en fila detras de quien lidera: SOLO se mueven si el explorador se ha movido de verdad
+        // (un paso en el sitio, p. ej. recoger un objeto que quedo bajo sus pies, no los apila encima de el).
+        if (nx != fromX || ny != fromY) run.followerTiles = ExplorerPartyRules.followTheLeaderTiles(run.followerTiles, fromX to fromY, nx to ny)
         val roomIdx = run.map.rooms.indexOfFirst { it.contains(nx, ny) }
         if (roomIdx >= 0) run.map.visitedRooms.add(roomIdx)
 
@@ -1356,10 +1650,13 @@ object DungeonSimulator {
         run.stepsSincePassiveHeal++
         if (run.stepsSincePassiveHeal >= PASSIVE_HEAL_EVERY_STEPS) {
             run.stepsSincePassiveHeal = 0
-            if (run.hp > 0f) {
-                val level = playerLevelFor(context, species, shiny, run)
-                val maxHpNow = maxHpForLevel(context, species, level).toFloat()
-                run.hp = (run.hp + PASSIVE_HEAL_AMOUNT).coerceAtMost(maxHpNow)
+            // Con equipo, cada miembro que siga en pie se regenera (los caidos no se levantan).
+            val team = teamOf(species, shiny, run)
+            for (i in team.indices) {
+                if (run.hpOf(i) <= 0f) continue
+                val level = memberLevel(context, run, i, team[i].first, team[i].second)
+                val maxHpNow = maxHpForLevel(context, team[i].first, level).toFloat()
+                run.setHp(i, (run.hpOf(i) + PASSIVE_HEAL_AMOUNT).coerceAtMost(maxHpNow))
             }
         }
 
@@ -1377,8 +1674,10 @@ object DungeonSimulator {
         // (como mucho tantas vueltas como enemigos haya).
         val desired = HashMap<Int, Pair<Int, Int>>()
         val desiredTargetRoom = HashMap<Int, Int>()
+        // Casillas de todo el equipo en pie (el que lidera primero): los enemigos persiguen a cualquiera de ellos.
+        val teamTiles = listOf(run.px to run.py) + run.followerTiles
         for (e in run.map.enemies) {
-            val (step, newTargetRoom) = decideEnemyStep(run.map, e, run.px, run.py)
+            val (step, newTargetRoom) = decideEnemyStep(run.map, e, teamTiles)
             desired[e.id] = step
             desiredTargetRoom[e.id] = newTargetRoom
         }
@@ -1420,39 +1719,72 @@ object DungeonSimulator {
         // Combate solo al pisar EXACTAMENTE la casilla del enemigo - pedido explicito del usuario
         // tras probarlo: "quita los ataques en diagonal" (revierte el intento anterior de que la
         // adyacencia en las 8 direcciones tambien contase como combate).
+        // Con equipo, el combate salta tambien si un enemigo ALCANZA a un compañero (casilla de uno de los que van en
+        // fila): pelean todos igualmente, asi nunca hay un enemigo y un compañero andando en la misma casilla.
         val enemyHere = run.map.enemies.find { it.x == run.px && it.y == run.py }
+            ?: run.map.enemies.find { (it.x to it.y) in run.followerTiles }
         val itemHere = run.map.items.find { it.x == run.px && it.y == run.py }
         val outcome: Outcome = when {
             enemyHere != null -> {
-                val startHp = run.hp
-                val level = playerLevelFor(context, species, shiny, run)
-                val result = resolveEncounter(context, species, level, run.hp, enemyHere, run.buffAtk, run.buffDef, run.buffSpd, run.buffAcc)
+                // Equipo: pelean todos los miembros en pie (ver resolveEncounter). Los caidos entran con 0 y no actuan.
+                val members = teamOf(species, shiny, run)
+                val startHps = run.teamHps()
+                val startHp = run.hp   // la del que va delante al empezar
+                // POSICIONES: cada miembro en pie tiene su casilla (el de delante en la del que lidera, los demas en las de la
+                // fila) y solo pega quien queda pegado al enemigo; el que no llega se acerca (ver resolveEncounter).
+                val startTiles = combatStartTiles(run, enemyHere, fromX to fromY, followersBefore)
+                val fighters = members.mapIndexed { i, (n, s) ->
+                    val level = memberLevel(context, run, i, n, s)
+                    FighterInfo(n, level, startHps[i], maxHpForLevel(context, n, level).toFloat(), startTiles[i])
+                }
+                val otherEnemyTiles = run.map.enemies.filter { it.id != enemyHere.id }.map { it.x to it.y }.toSet()
+                // A quien ha alcanzado el enemigo: al que lidera si piso su casilla, o al compañero cuya casilla piso.
+                val frontNow = run.frontIndex().coerceAtLeast(0)
+                val engagedMember = if (enemyHere.x == run.px && enemyHere.y == run.py) frontNow
+                    else (0 until run.teamSize).filter { it != frontNow && startHps[it] > 0f }.getOrNull(run.followerTiles.indexOf(enemyHere.x to enemyHere.y)) ?: -1
+                val result = resolveEncounter(context, fighters, enemyHere, run.buffAtk, run.buffDef, run.buffSpd, run.buffAcc, run.front, run.map, otherEnemyTiles, engagedMember)
+                run.front = result.endFront
+                if (!result.endTiles.isEmpty() && result.endFront in result.endTiles.indices) {
+                    // Despues del combate cada uno se queda donde acabo: el de delante es quien lidera (su casilla pasa a ser la
+                    // del explorador) y los demas que siguen en pie, la fila de detras (los caidos ya no ocupan casilla).
+                    val leadTile = result.endTiles[result.endFront]
+                    run.px = leadTile.first; run.py = leadTile.second
+                    run.followerTiles = (0 until run.teamSize).filter { it != result.endFront && result.finalHps[it] > 0f }.map { result.endTiles[it] }
+                }
                 // El buff se consume ENTERO en este combate, gane o pierda (nunca sobrevive a un
                 // segundo combate) - antes esto lo hacia DungeonState.clearCombatBuffs dentro de
                 // resolveEncounter; ahora resolveEncounter es puro, asi que el reset vive aqui.
                 run.buffAtk = 1f; run.buffDef = 1f; run.buffSpd = 1f; run.buffAcc = 0f
-                run.hp = result.remainingHp
+                run.setTeamHps(result.finalHps)
                 if (result.won) {
                     run.map.enemies.remove(enemyHere)
                     // Botin del jefe - pedido explicito del usuario: "cuando muere aparecera
                     // experiencia, vida y objetos varios".
                     if (enemyHere.isBoss) run.map.items.addAll(bossLootTiles(context, run.map, enemyHere.x, enemyHere.y, run.floor))
                 }
-                if (run.hp <= 0f) Outcome.Defeated(result.won, result.rounds)
-                else Outcome.Combat(enemyHere, result.won, result.rounds, startHp, result.enemyMaxHp)
+                if (run.isDefeated()) Outcome.Defeated(result.won, result.rounds, enemyHere, result.enemyMaxHp, startHps, result.startFront, result.startTiles)
+                else Outcome.Combat(enemyHere, result.won, result.rounds, startHp, result.enemyMaxHp, startHps, result.startFront, result.endFront, result.startTiles)
             }
             itemHere != null -> {
                 val effectText: String = when (itemHere.kind) {
                     "candy", "vitamin" -> {
-                        if (APPLY_REAL_CANDY_XP) PetState.grantXpToIndividual(context, species, shiny, itemHere.xp)
-                        run.runXp += itemHere.xp
-                        "+${itemHere.xp.toInt()} XP"
+                        // El XP se REPARTE a partes iguales entre el explorador y sus compañeros (cada uno
+                        // recibe su parte entera): el total ganado es el mismo, pero llega a mas Pokemon.
+                        // runXp lleva SOLO la parte del explorador, que es la que simulatedLevel suma sobre
+                        // su XP inicial para dar su nivel.
+                        val share = distributeCandyXp(context, species, shiny, run, itemHere.xp)
+                        // Con decimales cuando es poco (un caramelo de piso bajo vale ~1 XP y entre tres toca ~0,3: antes el texto
+                        // truncaba a "+0 XP cada uno" aunque la XP sumada era real y no cero).
+                        if (share < itemHere.xp) "+${formatXpAmount(share)} XP cada uno" else "+${formatXpAmount(itemHere.xp)} XP"
                     }
                     // Medicinas con el MISMO efecto que las bayas - pedido explicito del usuario:
                     // "las medicinas como las bayas".
                     "berry", "medicine" -> {
-                        val level = playerLevelFor(context, species, shiny, run)
-                        val maxHpNow = maxHpForLevel(context, species, level)
+                        // Las curaciones van al miembro en pie con MENOS fraccion de vida (con el relevo por poca
+                        // vida, curar solo al de delante la desperdiciaria: el tocado queda atras descansando).
+                        val maxs = teamMaxHps(context, species, shiny, run)
+                        val target = ExplorerPartyRules.mostHurtAlive(run.teamHps(), maxs).coerceAtLeast(0)
+                        val maxHpNow = maxs[target].toInt()
                         // La fraccion 0-1 a curar ya se decidio al GENERAR el objeto (ver
                         // HealTier/healTierWeights/randomHealFraction, resuelto en randomItemTile/
                         // bossLootTiles) - aqui solo se aplica sobre el HP maximo ACTUAL (que
@@ -1461,7 +1793,7 @@ object DungeonSimulator {
                         // "berry"/"medicine" es esta fraccion - mismo campo, significado distinto
                         // segun el rol, documentado en randomItemTile.
                         val healAmount = maxHpNow * itemHere.xp
-                        run.hp = (run.hp + healAmount).coerceAtMost(maxHpNow.toFloat())
+                        run.setHp(target, (run.hpOf(target) + healAmount).coerceAtMost(maxHpNow.toFloat()))
                         "+${healAmount.toInt()} HP"
                     }
                     "buff" -> {
@@ -1485,8 +1817,10 @@ object DungeonSimulator {
             run.px == run.map.exitX && run.py == run.map.exitY && run.map.enemies.none { it.isBoss } -> {
                 run.floor++
                 if (run.floor <= DungeonState.MAX_FLOOR) {
-                    run.map = generateMap(context, run.floor, species)
+                    run.map = generateMap(context, run.floor, species, 1 + run.companions.size)
                     run.px = run.map.startX; run.py = run.map.startY
+                    // Piso nuevo: los compañeros se colocan junto a la entrada (cada uno en su casilla).
+                    run.followerTiles = placeFollowers(run.map, run.px, run.py, run.aliveFollowers())
                 }
                 Outcome.Stairs(run.floor)
             }
@@ -1494,6 +1828,9 @@ object DungeonSimulator {
         }
         return StepResult(fromX, fromY, nx, ny, enemyMoves, outcome)
     }
+
+    /** XP para enseñar en un texto (ver ExplorerPartyRules.formatXp). */
+    fun formatXpAmount(xp: Float): String = ExplorerPartyRules.formatXp(xp)
 
     /** Marca en DungeonState.discoveredItems el objeto decorativo de [outcome], si es un Pickup
      *  de rol "decor" - se llama desde los dos sitios que resuelven una carrera DE VERDAD
@@ -1525,6 +1862,13 @@ object DungeonSimulator {
      *  (ver DungeonState.recordLoopRun) en vez del resumen de una sola carrera que [endFn] ya
      *  escribio (pedido explicito del usuario: "el resumen no tiene que poner la ultima mazmorra,
      *  tiene que poner el resumen global"). */
+    /** Texto del fin de carrera por derrota: "cayó en el piso N", y con compañeros "... junto con X" (la carrera solo acaba
+     *  cuando caen TODOS; antes solo se nombraba al explorador y parecia que habia caido el solo). */
+    fun defeatClause(companionNames: List<String>): (Int) -> String = { floor ->
+        if (companionNames.isEmpty()) "cayó en el piso $floor"
+        else "cayó en el piso $floor junto con ${companionNames.joinToString(" y ") { PetState.displayLabel(it) }}"
+    }
+
     fun finishRun(context: Context, species: String, verbClause: (Int) -> String, endFn: (Context) -> Unit) {
         val floorReached = DungeonState.currentFloor(context).coerceAtMost(DungeonState.MAX_FLOOR)
         val repeat = DungeonState.autoRepeat(context)
@@ -1561,7 +1905,12 @@ object DungeonSimulator {
      *  automatica de la MISMA sesion en bucle, no una nueva: no debe reiniciar los acumulados del
      *  resumen global (ver KEY_LOOP_RUNS) - [queueNextExplorer] ya los reinicio el cambiar a
      *  otro, asi que aqui siempre se continua tal cual. */
-    fun resolveCooldownIfReady(context: Context) {
+    fun resolveCooldownIfReady(context: Context) = synchronized(this) { resolveCooldownIfReadyLocked(context) }
+
+    // Con el cerrojo de runTick: ahora se llama tambien desde el hilo de la puesta al dia y al
+    // arrancar el servicio (no solo desde el Handler principal), y dos llamadas a la vez podian
+    // reasignar al explorador dos veces.
+    private fun resolveCooldownIfReadyLocked(context: Context) {
         if (!DungeonState.isInCooldown(context)) return
         if (System.currentTimeMillis() < DungeonState.cooldownUntil(context)) return
         val species = DungeonState.currentSpecies(context)
@@ -1577,10 +1926,31 @@ object DungeonSimulator {
             DungeonState.reopenIdle(context)
             return
         }
-        DebugLog.log(context, "mazmorra: cierre resuelto - reasigna a ${PetState.displayLabel(species)}")
+        // El pre-elegido pudo dejar de existir (borrado) o ser ya otra especie (evoluciono por un camino que no pasa por
+        // DungeonState.renameMember): reasignarlo dejaba un explorador fantasma que ni gana XP ni existe (QaConflicts).
+        if (!PetState.hasIndividual(context, species, shiny) || PetState.hasEvolvedAway(context, species, shiny)) {
+            DebugLog.log(context, "mazmorra: cierre resuelto - reabre en IDLE (${PetState.displayLabel(species)} ya no existe como tal)")
+            DungeonState.reopenIdle(context)
+            return
+        }
+        // Mismo motivo que arriba: el bucle puede reasignar sin pasar por el selector, y entretanto el
+        // pre-elegido pudo meterse en la guarderia.
+        if (PetState.isInNursery(context, species, shiny)) {
+            DebugLog.log(context, "mazmorra: cierre resuelto - reabre en IDLE (${PetState.displayLabel(species)} está en la guardería)")
+            DungeonState.reopenIdle(context)
+            return
+        }
+        // Los compañeros pre-elegidos tambien pudieron dejar de valer (ahora son el activo, estan en la
+        // guarderia...): se quitan sin mas y el resto del grupo entra igual.
+        val wanted = DungeonState.companions(context)
+        val companions = DungeonState.usableCompanions(context, species to shiny, wanted)
+        DebugLog.log(
+            context, "mazmorra: cierre resuelto - reasigna a ${PetState.displayLabel(species)}" +
+                if (wanted.isEmpty()) "" else " con ${companions.size}/${wanted.size} compañero(s)"
+        )
         val startXp = PetState.rawStats(context, species, shiny)?.xp ?: 0f
         val hp = maxHp(context, species, shiny)
-        DungeonState.assign(context, species, shiny, hp, startXp, autoRepeat = DungeonState.autoRepeat(context), continuingLoop = true)
+        DungeonState.assign(context, species, shiny, hp, startXp, autoRepeat = DungeonState.autoRepeat(context), continuingLoop = true, companions = companions)
     }
 
     /** Segundo plano (DungeonService, ~1 min mientras la app no esta abierta): resuelve
@@ -1609,20 +1979,66 @@ object DungeonSimulator {
      *  dos veces), y el cooldown (nadie explorando) no suma. */
     fun accrueCareTick(context: Context) {
         if (!DungeonState.isExploring(context)) return
-        val species = DungeonState.currentSpecies(context) ?: return
-        PetState.addCareHours(context, species, DungeonState.currentShiny(context), CARE_HOURS_PER_TICK)
+        // Todo el grupo (explorador + compañeros) esta en la mazmorra, asi que a todos les cuenta.
+        for ((n, s) in DungeonState.party(context)) PetState.addCareHours(context, n, s, CARE_HOURS_PER_TICK)
     }
+
+    /** Reparte [xp] (de un caramelo/vitamina) a partes iguales entre el explorador [species]/[shiny] y los
+     *  compañeros de [run] (ExplorerPartyRules.sharePerMember): a cada uno le llega su parte como XP real
+     *  y permanente, y [RunState.runXp] suma solo la parte del explorador (la que simulatedLevel usa para
+     *  su nivel). Devuelve la parte de cada miembro. Publica para que stepOnce y la autocomprobacion usen
+     *  EXACTAMENTE el mismo camino. */
+    fun distributeCandyXp(context: Context, species: String, shiny: Boolean, run: RunState, xp: Float): Float {
+        // Solo cobran los miembros que siguen EN PIE (un caido ya no recibe XP); si por lo que sea no queda
+        // nadie, se cuenta al explorador para no perder el XP.
+        val team = teamOf(species, shiny, run)
+        val alive = team.indices.filter { run.hpOf(it) > 0f }.ifEmpty { listOf(0) }
+        val share = ExplorerPartyRules.sharePerMember(xp, alive.size)
+        run.teamXp += xp
+        for (i in alive) {
+            val (n, s) = team[i]
+            if (APPLY_REAL_CANDY_XP && run.applyRealXp) grantDungeonXp(context, n, s, share)
+            if (i == 0) run.runXp += share
+            else {
+                while (run.companionSimXp.size < i) run.companionSimXp.add(0f)
+                run.companionSimXp[i - 1] = run.companionSimXp[i - 1] + share
+            }
+        }
+        return share
+    }
+
+    /** XP real y permanente para [name]/[shiny] por lo que se gana en la mazmorra. Si ese Pokemon es a
+     *  la vez el compañero ACTIVO del widget (puede pasar si lo pones activo mientras explora), se usa
+     *  la ruta del activo: sumarle XP "de golpe" como a cualquier otro le borraria el XP por tiempo
+     *  que lleva pendiente (ver PetState.grantXpToActive). */
+    private fun grantDungeonXp(context: Context, name: String, shiny: Boolean, amount: Float) {
+        if (name == PetState.currentPokemon(context) && shiny == PetState.isActiveShiny(context)) PetState.grantXpToActive(context, amount)
+        else PetState.grantXpToIndividual(context, name, shiny, amount, durable = !batchWrites)
+    }
+
+    /** true mientras corre una puesta al dia: el XP real que concede la mazmorra se escribe sin esperar al disco en cada caramelo (miles
+     *  seguidos) y se vuelca de una vez al terminar (ver [catchUpIfStalled]). */
+    @Volatile private var batchWrites = false
+
+    // Tiempo (ns) que se va en cada parte de runTick, para saber donde se gasta la puesta al dia (se vuelca en su log).
+    private var profLoadNs = 0L
+    private var profCareNs = 0L
+    private var profStepsNs = 0L
+    private var profPersistNs = 0L
 
     fun runTick(context: Context) = synchronized(this) {
         val species = DungeonState.currentSpecies(context) ?: return@synchronized
         val shiny = DungeonState.currentShiny(context)
+        var t = System.nanoTime()
         val run = loadRunState(context) ?: return@synchronized
+        profLoadNs += System.nanoTime() - t; t = System.nanoTime()
         accrueCareTick(context)
+        profCareNs += System.nanoTime() - t; t = System.nanoTime()
         val steps = Random.nextInt(TILE_MOVES_MIN, TILE_MOVES_MAX_EXCLUSIVE)
         for (i in 0 until steps) {
             val result = stepOnce(context, species, shiny, run)
             recordDecorPickup(context, result.outcome)
-            if (result.outcome is Outcome.Defeated) { finishRun(context, species, { f -> "cayó en el piso $f" }, DungeonState::returnDefeated); return@synchronized }
+            if (result.outcome is Outcome.Defeated) { finishRun(context, species, defeatClause(run.companions.map { it.first }), DungeonState::returnDefeated); return@synchronized }
             // Bug real (ya existia antes del modo continuo): llegar al piso 100 en SEGUNDO PLANO
             // antes solo hacia "break" y persistia, sin llamar nunca a returnFinished - el slot se
             // quedaba en EXPLORING con floor>MAX_FLOOR para siempre (stepOnce solo devuelve
@@ -1631,7 +2047,16 @@ object DungeonSimulator {
             // arregla aqui de paso.
             if (result.outcome is Outcome.Finished) { finishRun(context, species, { "completó la mazmorra entera" }, DungeonState::returnFinished); return@synchronized }
         }
+        profStepsNs += System.nanoTime() - t; t = System.nanoTime()
         persist(context, run)
+        profPersistNs += System.nanoTime() - t
+    }
+
+    /** Vuelca (y pone a cero) lo que cuesta cada parte de runTick desde la ultima vez - para el log de la puesta al dia. */
+    private fun takeProfile(): String = synchronized(this) {
+        val s = "carga ${profLoadNs / 1_000_000} ms, cuidado ${profCareNs / 1_000_000} ms, pasos ${profStepsNs / 1_000_000} ms, guardado ${profPersistNs / 1_000_000} ms"
+        profLoadNs = 0L; profCareNs = 0L; profStepsNs = 0L; profPersistNs = 0L
+        s
     }
 
     /** Pedido explicito del usuario: "si por lo que sea no corre en segundo plano, detecte cuando
@@ -1681,7 +2106,12 @@ object DungeonSimulator {
         // abrir la app, o volver de la vista en vivo) lanzaban dos hilos que recuperaban el MISMO
         // hueco cada uno - con la carrera en EXPLORING, los ciclos perdidos se contaban doble.
         if (!catchUpRunning.compareAndSet(false, true)) return
-        try { catchUpIfStalledInner(context, tickIntervalMs) } finally { catchUpRunning.set(false) }
+        batchWrites = true
+        try { catchUpIfStalledInner(context, tickIntervalMs) } finally {
+            batchWrites = false
+            PetState.flushWrites(context)
+            catchUpRunning.set(false)
+        }
     }
 
     private val catchUpRunning = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -1691,6 +2121,10 @@ object DungeonSimulator {
         val lastTick = DungeonState.lastTickAt(context)
         if (lastTick <= 0L) return
         val realNow = System.currentTimeMillis()
+        // Un cooldown que SIGUE en marcha no es un parón que recuperar (lastTick es el momento en
+        // que empezo, y se queda ahi todo el cierre): antes cada vez que se abria la app a mitad de
+        // un cooldown salia "N ciclos perdidos" sin que hubiera ninguno.
+        if (DungeonState.isInCooldown(context) && realNow < DungeonState.cooldownUntil(context)) return
         val missedTicks = ((realNow - lastTick) / tickIntervalMs).toInt()
         if (missedTicks < 2) return
         // Log persistente (pedido explicito del usuario: "si agregas logs para que quede
@@ -1698,6 +2132,8 @@ object DungeonSimulator {
         // resultado final, sin forma de confirmar despues cuantos ciclos/carreras de bucle se
         // recuperaron de verdad). Ver DebugLog.kt - "Log de mazmorra" en Ajustes.
         DebugLog.log(context, "mazmorra: puesta al día - $missedTicks ciclos perdidos, recuperando todos")
+        takeProfile()
+        val catchUpStart = System.currentTimeMillis()
         var virtualNow = lastTick
         var runsFinishedIntoCooldown = 0
         var cooldownsResolvedIntoNewRun = 0
@@ -1712,10 +2148,11 @@ object DungeonSimulator {
                     if (virtualNow >= DungeonState.cooldownUntil(context)) {
                         resolveCooldownIfReady(context)
                         cooldownsResolvedIntoNewRun++
-                    } else {
-                        DebugLog.log(context, "mazmorra: puesta al día terminada (bucle recuperó $runsFinishedIntoCooldown carrera(s) más, cooldown restante todavía no cumplido)")
-                        return // el cooldown todavia no ha pasado ni contando todo el tiempo perdido - esperar de verdad
                     }
+                    // Si no: este ciclo virtual aun cae DENTRO del cierre - se salta y se sigue con
+                    // el siguiente (antes aqui se hacia `return`, y como lastTick es el INICIO del
+                    // cooldown, el primer ciclo siempre caia dentro: la puesta al dia nunca
+                    // resolvia un cooldown ya vencido y dependia solo del ciclo normal de 60 s).
                 }
                 else -> {
                     runTick(context) // EXPLORING
@@ -1730,6 +2167,7 @@ object DungeonSimulator {
                 }
             }
         }
+        DebugLog.log(context, "mazmorra: puesta al día - $missedTicks ciclos en ${System.currentTimeMillis() - catchUpStart} ms (${takeProfile()})")
         if (runsFinishedIntoCooldown > 0 || cooldownsResolvedIntoNewRun > 0) {
             DebugLog.log(context, "mazmorra: puesta al día completó los $missedTicks ciclos - bucle recuperó $runsFinishedIntoCooldown carrera(s) terminada(s) y $cooldownsResolvedIntoNewRun cooldown(s) resuelto(s) hacia una carrera nueva")
         }
@@ -1754,23 +2192,43 @@ object DungeonSimulator {
         // Outcome.Defeated). [fatalWasMutualKill] distingue como termino ESTA carrera concreta:
         // true = muerto justo al matar tambien al enemigo (KO mutuo), false = derrota clara (el
         // enemigo sigue vivo).
-        val combats: Int, val combatsWon: Int, val fatalWasMutualKill: Boolean
+        val combats: Int, val combatsWon: Int, val fatalWasMutualKill: Boolean,
+        // XP TOTAL repartida entre todo el equipo en esta carrera (la suma de las partes de cada miembro);
+        // [xpGained] es solo la parte del explorador. Con un solo miembro son iguales.
+        val teamXpGained: Float = xpGained,
+        // Pasos que duro la carrera (para estimar su duracion en segundo plano).
+        val steps: Int = 0
     )
 
-    data class BalanceReport(val species: String, val shiny: Boolean, val startLevel: Int, val runs: List<BalanceRunResult>)
+    data class BalanceReport(
+        val species: String, val shiny: Boolean, val startLevel: Int, val runs: List<BalanceRunResult>,
+        val companions: List<Pair<String, Boolean>> = emptyList()
+    )
 
     /** Tope de pasos por intento (red de seguridad - no deberia hacer falta nunca en la practica,
      *  una carrera real siempre termina en Defeated/Finished, pero evita un bucle infinito si
      *  algun dia un cambio futuro rompe esa garantia). */
     private const val BALANCE_MAX_STEPS_PER_RUN = 8000
 
-    fun runBalanceSimulation(context: Context, species: String, shiny: Boolean, startXp: Float, attempts: Int): BalanceReport {
+    /** [companions]: el equipo que acompaña al explorador (pelean con el, ver resolveEncounter); sus niveles de
+     *  partida son los reales de cada individuo. La simulacion NO toca nada real: los niveles salen de un XP de
+     *  simulacion (RunState.applyRealXp = false) - antes este simulador repartia XP REAL a los Pokemon al recoger
+     *  caramelos simulados. */
+    fun runBalanceSimulation(
+        context: Context, species: String, shiny: Boolean, startXp: Float, attempts: Int,
+        companions: List<Pair<String, Boolean>> = emptyList()
+    ): BalanceReport {
         val startLevel = PetState.levelOf(context, startXp, species)
         val results = ArrayList<BalanceRunResult>(attempts)
+        val companionXps = companions.map { (n, s) -> PetState.rawStats(context, n, s)?.xp ?: 0f }
+        val companionHps = companions.mapIndexed { i, (n, _) ->
+            maxHpForLevel(context, n, PetState.levelOf(context, companionXps[i], n)).toFloat()
+        }
         repeat(attempts) {
             val startHp = maxHpForLevel(context, species, startLevel).toFloat()
-            val map = generateMap(context, 1, species)
-            val run = RunState(1, startHp, map, map.startX, map.startY, runStartXp = startXp)
+            val map = generateMap(context, 1, species, 1 + companions.size)
+            val run = RunState(1, startHp, map, map.startX, map.startY, runStartXp = startXp, companions = companions, companionHps = companionHps)
+                .also { it.applyRealXp = false; it.companionSimXp.addAll(companionXps) }
             val itemCounts = HashMap<String, Int>()
             val enemyCounts = HashMap<String, Int>()
             var attacksTotal = 0; var attacksMissed = 0; var attacksCritical = 0
@@ -1788,6 +2246,7 @@ object DungeonSimulator {
                         if (o.won) combatsWon++
                         enemyCounts.merge(o.enemy.species, 1, Int::plus)
                         for (r in o.rounds) {
+                            if (r.move) continue
                             attacksTotal++
                             if (r.missed) attacksMissed++
                             if (r.critical) attacksCritical++
@@ -1802,6 +2261,7 @@ object DungeonSimulator {
                         if (o.enemyAlsoDefeated) combatsWon++
                         fatalWasMutualKill = o.enemyAlsoDefeated
                         for (r in o.rounds) {
+                            if (r.move) continue
                             attacksTotal++
                             if (r.missed) attacksMissed++
                             if (r.critical) attacksCritical++
@@ -1815,10 +2275,285 @@ object DungeonSimulator {
             val levelFinal = PetState.levelOf(context, startXp + run.runXp, species)
             results.add(BalanceRunResult(
                 run.floor, run.runXp, levelFinal, run.itemsCollected, itemCounts, enemyCounts,
-                attacksTotal, attacksMissed, attacksCritical, combats, combatsWon, fatalWasMutualKill
+                attacksTotal, attacksMissed, attacksCritical, combats, combatsWon, fatalWasMutualKill, run.teamXp, steps
             ))
         }
-        return BalanceReport(species, shiny, startLevel, results)
+        return BalanceReport(species, shiny, startLevel, results, companions)
+    }
+
+    /** SOLO PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_TEAM_FIGHT_CHECK): lanza [encounters] combates de equipo con
+     *  equipos, vidas y enemigos al azar (con tus Pokemon) sobre mapas SINTETICOS (una sala abierta y un pasillo de una
+     *  casilla de ancho) y comprueba, golpe a golpe, las reglas del combate: quien ataca esta pegado al enemigo (en el
+     *  pasillo el segundo de la fila NO pega); el enemigo solo golpea a alguien pegado a el (y al de delante si lo tiene
+     *  pegado) y solo le quita vida a el; los que no llegan solo dan UN paso por asalto, sin pisar a nadie; la vida de nadie
+     *  sube; un miembro caido de salida nunca ataca; el delantero cambia solo por la regla del 25 % y solo con alguien pegado
+     *  a el (se cambian de casilla); "ganado" es lo mismo que "queda alguien en pie". No toca nada real. */
+    fun debugTeamFightCheck(context: Context, encounters: Int = 400): String {
+        val pool = PetState.ownedIndividuals(context).map { it.first }.distinct()
+        if (pool.size < 4) return "no hay suficientes Pokemon distintos para comprobar"
+        val rnd = Random(20261017)
+        var problems = 0; var relays = 0; var fought = 0; var teamWon = 0; var teamLost = 0; var capped = 0; var rounds = 0
+        var moveEvents = 0; var swapEvents = 0; var corridorFights = 0; var corridorBlocked = 0; var idleStandoffs = 0
+        var hitsOnOthers = 0   // golpes del enemigo a alguien que NO iba delante (ahora puede golpear a cualquiera que lo toque)
+        val notes = ArrayList<String>()
+        fun bad(msg: String) { problems++; if (notes.size < 8) notes.add(msg) }
+
+        // Sala abierta (15 x 13) y pasillo (25 x 3, solo la fila del medio es suelo).
+        fun makeMap(w: Int, h: Int, open: (Int, Int) -> Boolean) = DungeonState.DungeonMap(
+            w, h, BooleanArray(w * h) { !open(it % w, it / w) }, 1, 1, w - 2, h - 2, mutableListOf(), mutableListOf()
+        )
+        val roomMap = makeMap(15, 13) { x, y -> x in 1..13 && y in 1..11 }
+        val corridorMap = makeMap(25, 3) { x, y -> y == 1 && x in 1..23 }
+
+        repeat(encounters) { n ->
+            val corridor = rnd.nextBoolean()
+            val map = if (corridor) corridorMap else roomMap
+            val size = 1 + rnd.nextInt(3)
+            // Casillas: en el pasillo, el enemigo en un sitio y el equipo en fila contigua a un lado (o a los dos lados);
+            // en la sala, todos en casillas libres al azar y distintas.
+            val enemyTile: Pair<Int, Int>
+            val tilesIn = ArrayList<Pair<Int, Int>>()
+            if (corridor) {
+                val ex = 8 + rnd.nextInt(9)
+                enemyTile = ex to 1
+                val dir = if (rnd.nextBoolean()) -1 else 1
+                for (k in 0 until size) tilesIn.add((ex + dir * (k + 1)) to 1)
+            } else {
+                val free = ArrayList<Pair<Int, Int>>()
+                for (y in 1..11) for (x in 1..13) free.add(x to y)
+                free.shuffle(rnd)
+                enemyTile = free.removeAt(0)
+                for (k in 0 until size) tilesIn.add(free.removeAt(0))
+            }
+            val team = List(size) {
+                val name = pool.random(rnd); val level = 5 + rnd.nextInt(70)
+                val max = maxHpForLevel(context, name, level).toFloat()
+                // Vidas variadas: llenas, a medias, casi caidas, y algun miembro caido de salida (nunca el primero).
+                val frac = when (rnd.nextInt(5)) { 0 -> 1f; 1 -> 0.5f; 2 -> 0.1f; 3 -> 0.02f; else -> if (it == 0) 1f else 0f }
+                FighterInfo(name, level, max * frac, max, if (max * frac > 0f) tilesIn[it] else (-1 to -1))
+            }
+            if (team.none { it.startHp > 0f }) return@repeat   // sin nadie en pie no hay combate
+            val enemy = DungeonState.EnemyTile(n, enemyTile.first, enemyTile.second, pool.random(rnd), 5 + rnd.nextInt(80), isBoss = rnd.nextInt(5) == 0)
+            // El que iba delante al empezar: a veces el primero, a veces otro (incluso uno caido: debe corregirse solo).
+            val startFrontIn = rnd.nextInt(size)
+            val res = resolveEncounter(context, team, enemy, 1f, 1f, 1f, 0f, startFrontIn, map)
+            fought++; rounds += res.rounds.size
+            if (corridor) corridorFights++
+            val start = team.map { it.startHp }
+            val maxs = team.map { it.maxHp }
+            if (res.finalHps.size != team.size) { bad("combate $n: ${res.finalHps.size} vidas finales para ${team.size} miembros"); return@repeat }
+            if (res.won != res.finalHps.any { it > 0f }) bad("combate $n: ganado=${res.won} pero vidas finales ${res.finalHps}")
+            if (res.won) teamWon++ else teamLost++
+            if (res.won && res.rounds.lastOrNull()?.enemyHpAfter?.let { it > 0f } == true) capped++
+            if (res.rounds.none { !it.move }) idleStandoffs++
+            val isWall = { x: Int, y: Int -> map.isWall(x, y) }
+            fun reach(t: Pair<Int, Int>) = TeamCombatGeometry.canStrike(isWall, t.first, t.second, enemyTile.first, enemyTile.second)
+            fun touch(a: Pair<Int, Int>, b: Pair<Int, Int>) = abs(a.first - b.first) <= 1 && abs(a.second - b.second) <= 1
+
+            var prev = start
+            var prevTiles: List<Pair<Int, Int>> = res.startTiles
+            var lastTarget = -1
+            // El delantero esperado en cada golpe lo marca la regla pura (ExplorerPartyRules.nextFront): se vigila que el
+            // combate la cumpla en el arranque y despues de cada golpe recibido, y que nunca cambie "por su cuenta".
+            val tilesStart = team.map { it.startTile }
+            var expectedFront = ExplorerPartyRules.nextFront(start, maxs, startFrontIn) { j -> j != startFrontIn && touch(tilesStart[j], tilesStart[startFrontIn]) }
+            if (res.startFront != expectedFront) bad("combate $n: empieza delante el ${res.startFront} y la regla dice $expectedFront")
+            if (res.startTiles.size != team.size) { bad("combate $n: ${res.startTiles.size} casillas de salida para ${team.size} miembros"); return@repeat }
+            var pendingSwap: Pair<Int, Int>? = null   // relevo por poca vida tras el golpe anterior: se refleja en las casillas del suceso siguiente
+            for ((k, r) in res.rounds.withIndex()) {
+                val now = r.memberHpAfter
+                val tl = r.tiles
+                if (now.size != team.size || tl.size != team.size) { bad("combate $n golpe $k: listas de tamaño ${now.size}/${tl.size}"); break }
+                pendingSwap?.let { (a, b) ->
+                    prevTiles = prevTiles.toMutableList().also { t -> val x = t[a]; t[a] = t[b]; t[b] = x }
+                    swapEvents++; pendingSwap = null
+                }
+                for (i in team.indices) if (now[i] > prev[i] + 0.001f) bad("combate $n golpe $k: la vida del miembro $i SUBE (${prev[i]} -> ${now[i]})")
+                if (r.front != expectedFront) bad("combate $n golpe $k: va delante el ${r.front} y la regla dice $expectedFront")
+                // Casillas: los que siguen en pie no se pisan entre si ni pisan al enemigo, y no estan en una pared.
+                val alivePos = team.indices.filter { now[it] > 0f }.map { tl[it] }
+                if (alivePos.toSet().size != alivePos.size) bad("combate $n golpe $k: dos miembros en la misma casilla $tl")
+                if (alivePos.any { it == enemyTile }) bad("combate $n golpe $k: un miembro pisa al enemigo $tl")
+                if (alivePos.any { isWall(it.first, it.second) }) bad("combate $n golpe $k: un miembro en una pared $tl")
+                if (r.move) {
+                    moveEvents++
+                    for (i in team.indices) if (tl[i] != prevTiles[i]) {
+                        if (now[i] <= 0f) bad("combate $n golpe $k: se mueve el miembro $i, caido")
+                        if (abs(tl[i].first - prevTiles[i].first) > 1 || abs(tl[i].second - prevTiles[i].second) > 1) bad("combate $n golpe $k: el miembro $i salta de ${prevTiles[i]} a ${tl[i]}")
+                        if (reach(prevTiles[i])) bad("combate $n golpe $k: se mueve el miembro $i aunque ya llegaba al enemigo")
+                    }
+                } else if (tl != prevTiles) {
+                    bad("combate $n golpe $k: las casillas cambian sin ser un movimiento ni un relevo: $prevTiles -> $tl")
+                }
+                if (r.playerActs && !r.move) {
+                    if (start[r.actor] <= 0f) bad("combate $n golpe $k: ataca el miembro ${r.actor}, caido de salida")
+                    if (prev[r.actor] <= 0f) bad("combate $n golpe $k: ataca el miembro ${r.actor} con 0 de vida")
+                    if (!reach(tl[r.actor])) bad("combate $n golpe $k: ataca el miembro ${r.actor} desde ${tl[r.actor]} sin llegar al enemigo en $enemyTile")
+                    if (now != prev) bad("combate $n golpe $k: un ataque nuestro ha cambiado la vida de alguien")
+                } else if (!r.playerActs) {
+                    if (prev[r.actor] <= 0f) bad("combate $n golpe $k: el enemigo golpea a un caido (${r.actor})")
+                    if (!reach(tl[r.actor])) bad("combate $n golpe $k: el enemigo golpea al miembro ${r.actor} que no esta pegado a el")
+                    if (r.actor != r.front) hitsOnOthers++
+                    for (i in team.indices) if (i != r.actor && now[i] != prev[i]) bad("combate $n golpe $k: el golpe a ${r.actor} ha tocado la vida del miembro $i")
+                    if (lastTarget >= 0 && r.actor != lastTarget) relays++
+                    lastTarget = r.actor
+                    // Tras el golpe puede cambiar quien va delante (poca vida o caido): solo con alguien pegado a el.
+                    if (r.actor == r.front) {
+                        val after = ExplorerPartyRules.nextFront(now, maxs, r.front) { j -> j != r.front && touch(tl[j], tl[r.front]) }
+                        if (after >= 0) {
+                            if (after != r.front && now[r.front] > 0f) pendingSwap = r.front to after
+                            expectedFront = after
+                        }
+                    }
+                }
+                // Pasillo: el segundo de la fila no llega al enemigo mientras el primero esta delante y nadie ha cambiado de sitio.
+                if (corridor && r.playerActs && !r.move && abs(tl[r.actor].first - enemyTile.first) > 1) corridorBlocked++
+                prev = now
+                prevTiles = tl
+            }
+            if (prev != res.finalHps) bad("combate $n: la ultima instantanea ${prev} no coincide con las vidas finales ${res.finalHps}")
+            if (res.rounds.isNotEmpty() && res.endFront != expectedFront) bad("combate $n: acaba delante el ${res.endFront} y la regla dice $expectedFront")
+        }
+        // Persecucion (sala abierta): el enemigo va a por el miembro MAS CERCANO, sea quien lidere o uno de los que van detras.
+        fun chase(enemyAt: Pair<Int, Int>, team: List<Pair<Int, Int>>): Pair<Int, Int> =
+            decideEnemyStep(roomMap, DungeonState.EnemyTile(900, enemyAt.first, enemyAt.second, pool[0], 10), team).first
+        var chaseChecks = 0
+        fun expectChase(label: String, enemyAt: Pair<Int, Int>, team: List<Pair<Int, Int>>, want: Pair<Int, Int>) {
+            chaseChecks++
+            val got = chase(enemyAt, team)
+            if (got != want) bad("persecucion ($label): el enemigo en $enemyAt con el equipo en $team da el paso $got y deberia ser $want")
+        }
+        // Compañero a 2 casillas y lider a 8: va a por el compañero.
+        expectChase("compañero cerca, lider lejos", 10 to 6, listOf(2 to 6, 8 to 6), 9 to 6)
+        // Lider a 2 y compañero a 8: va a por el lider.
+        expectChase("lider cerca, compañero lejos", 4 to 6, listOf(2 to 6, 12 to 6), 3 to 6)
+        // Los dos a 3 casillas (empate): gana el primero de la lista (el lider).
+        expectChase("empate", 6 to 6, listOf(3 to 6, 9 to 6), 5 to 6)
+        // Un tercero mas cerca que los demas.
+        expectChase("tercero mas cerca", 6 to 3, listOf(2 to 3, 12 to 3, 6 to 5), 6 to 4)
+        // Nadie a menos de 4 casillas: no persigue a nadie (deambula; en esta sala sin mas salas, un paso cualquiera a una vecina).
+        chaseChecks++
+        if (ExplorerPartyRules.chaseTarget(6 to 6, listOf(1 to 6, 13 to 6)) != null) bad("persecucion: el enemigo persigue a alguien a mas de ${ExplorerPartyRules.CHASE_RADIUS} casillas")
+        return "$fought combates de equipo comprobados ($rounds sucesos) en sala y pasillo: ${if (problems == 0) "TODO CORRECTO" else "$problems PROBLEMAS"} - persecucion comprobada $chaseChecks veces, " +
+            "relevos de objetivo $relays, golpes del enemigo a quien no iba delante $hitsOnOthers, cambios de casilla por poca vida $swapEvents, pasos de acercamiento $moveEvents, " +
+            "combates en pasillo $corridorFights (golpes dados desde 2 o mas casillas: $corridorBlocked), sin que nadie llegara a pegar $idleStandoffs, " +
+            "el equipo gana $teamWon y pierde $teamLost (tope de asaltos en $capped)" +
+            notes.joinToString("") { System.lineSeparator() + "  ! " + it }
+    }
+
+    /** SOLO PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_TEAM_FIGHT_CHECK): recorre mapas REALES con un equipo de tres
+     *  ([runs] carreras, hasta [stepsPerRun] pasos cada una, sobre un RunState de mentira - no toca la partida) y
+     *  comprueba tras cada paso que el explorador y sus compañeros estan en casillas DISTINTAS y transitables, y mide
+     *  cuantas veces ocurre lo que antes los apilaba (volver sobre los pasos, combates por un compañero alcanzado) y si
+     *  un enemigo vivo queda encima de alguien del equipo. */
+    fun debugFollowCheck(context: Context, runs: Int = 24, stepsPerRun: Int = 500): String {
+        val pool = PetState.ownedIndividuals(context)
+        if (pool.size < 3) return "no hay tres Pokemon para comprobar"
+        val rnd = Random(424242)
+        var problems = 0; var steps = 0; var swaps = 0; var stayPutSteps = 0; var combats = 0; var behindCombats = 0
+        var enemyOnTeam = 0; var runsDone = 0; var realMoves = 0; var realStrikes = 0; var cappedReal = 0
+        val notes = ArrayList<String>()
+        fun bad(msg: String) { problems++; if (notes.size < 8) notes.add(msg) }
+        repeat(runs) { n ->
+            val picked = pool.shuffled(rnd).take(3)
+            val (leader, lShiny) = picked[0]
+            val comps = picked.drop(1)
+            val floor = 1 + rnd.nextInt(12)
+            val map = generateMap(context, floor, leader, 3)
+            val startXp = PetState.rawStats(context, leader, lShiny)?.xp ?: 0f
+            val compXps = comps.map { (nm, sh) -> PetState.rawStats(context, nm, sh)?.xp ?: 0f }
+            val startLevel = PetState.levelOf(context, startXp, leader)
+            val run = RunState(
+                floor, maxHpForLevel(context, leader, startLevel).toFloat(), map, map.startX, map.startY, runStartXp = startXp,
+                companions = comps, companionHps = comps.mapIndexed { i, (nm, _) -> maxHpForLevel(context, nm, PetState.levelOf(context, compXps[i], nm)).toFloat() }
+            ).also { it.applyRealXp = false; it.companionSimXp.addAll(compXps) }
+            runsDone++
+            ensureFollowerTiles(run)
+            var s = 0
+            while (s < stepsPerRun) {
+                s++; steps++
+                val before = run.followerTiles
+                val res = stepOnce(context, leader, lShiny, run)
+                val o = res.outcome
+                if (o is Outcome.Defeated || o is Outcome.Finished) break
+                val tiles = run.followerTiles
+                val leaderTile = run.px to run.py
+                val all = tiles + leaderTile
+                val moved = res.fromX != res.toX || res.fromY != res.toY
+                if (!moved) stayPutSteps++
+                if (moved && (res.toX to res.toY) in before) swaps++
+                if (o !is Outcome.Combat && !moved && tiles != before) bad("carrera $n paso $s: el explorador no se movio pero los compañeros si ($before -> $tiles)")
+                if (tiles.size != run.aliveFollowers()) bad("carrera $n paso $s: ${tiles.size} casillas para ${run.aliveFollowers()} compañeros en pie")
+                if (all.size != all.toSet().size) bad("carrera $n paso $s: dos del equipo en la misma casilla $all (${res.fromX},${res.fromY} -> ${res.toX},${res.toY})")
+                if (all.any { run.map.isWall(it.first, it.second) }) bad("carrera $n paso $s: alguien del equipo en una pared $all")
+                if (o is Outcome.Combat) {
+                    combats++
+                    if ((o.enemy.x to o.enemy.y) != (res.toX to res.toY)) behindCombats++
+                    // Combate en mapas reales: solo pega quien esta pegado al enemigo, y los demas dan pasos de uno en uno.
+                    val ex = o.enemy.x; val ey = o.enemy.y
+                    // Un combate que acaba con el enemigo AUN vivo (tope de asaltos) se da por ganado: se cuenta para ver si pasa en partidas reales.
+                    if (o.won && (o.rounds.lastOrNull()?.enemyHpAfter ?: 0f) > 0f) cappedReal++
+                    var prevTiles = o.startTiles
+                    for ((k, r) in o.rounds.withIndex()) {
+                        if (r.tiles.size != prevTiles.size) { bad("carrera $n paso $s golpe $k: casillas de tamaño ${r.tiles.size}"); break }
+                        val a = r.tiles[r.actor]
+                        if (r.move) {
+                            realMoves++
+                            for (i in r.tiles.indices) if (r.tiles[i] != prevTiles[i] &&
+                                (abs(r.tiles[i].first - prevTiles[i].first) > 1 || abs(r.tiles[i].second - prevTiles[i].second) > 1)) bad("carrera $n paso $s golpe $k: el miembro $i salta de ${prevTiles[i]} a ${r.tiles[i]}")
+                        } else if (!TeamCombatGeometry.canStrike({ x, y -> run.map.isWall(x, y) }, a.first, a.second, ex, ey)) {
+                            bad("carrera $n paso $s golpe $k: ${if (r.playerActs) "ataca" else "es golpeado"} el miembro ${r.actor} desde $a sin estar pegado al enemigo en ($ex,$ey)")
+                        } else realStrikes++
+                        prevTiles = r.tiles
+                    }
+                }
+                if (run.map.enemies.any { (it.x to it.y) in all }) enemyOnTeam++
+            }
+        }
+        return "$steps pasos en $runsDone carreras con equipo de tres sobre mapas reales: ${if (problems == 0) "TODO CORRECTO" else "$problems PROBLEMAS"} - " +
+            "vueltas sobre los propios pasos (cambio de sitio con un compañero) $swaps, pasos sin moverse $stayPutSteps, " +
+            "combates $combats (de ellos por alcanzar a un compañero: $behindCombats; golpes dados/recibidos $realStrikes, pasos de acercamiento $realMoves), " +
+            "enemigo vivo encima del equipo al acabar un paso: $enemyOnTeam, combates que acaban con el enemigo aun vivo (tope de asaltos): $cappedReal" +
+            notes.joinToString("") { System.lineSeparator() + "  ! " + it }
+    }
+
+    /** SOLO PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_TEAM_BALANCE): compara en simulacion el explorador SOLO con
+     *  el explorador + 1 y + 2 compañeros (su piso medio, XP y combates) para dos equipos de tus Pokemon: los tres de
+     *  mayor nivel y tres de nivel medio (los mas cercanos al 30). No toca nada real. */
+    fun debugTeamBalance(context: Context, attempts: Int): String {
+        val sb = StringBuilder()
+        val nl = System.lineSeparator()
+        val activeName = PetState.currentPokemon(context)
+        val owned = PetState.ownedIndividuals(context)
+            .filter { !(it.first == activeName && it.second == PetState.isActiveShiny(context)) }
+            .mapNotNull { (n, s) -> PetState.levelForPokemon(context, n, s)?.let { Triple(n, s, it) } }
+        if (owned.size < 3) return "no hay tres Pokemon para comparar"
+        fun describe(c: List<Triple<String, Boolean, Int>>) = c.joinToString(", ") { "${it.first} Nv${it.third}" }
+        val scenarios = listOf(
+            "equipo fuerte" to owned.sortedByDescending { it.third }.take(3),
+            "equipo medio" to owned.sortedBy { abs(it.third - 30) }.take(3)
+        )
+        for ((label, members) in scenarios) {
+            sb.append("[$label] ${describe(members)} - $attempts carreras por configuracion").append(nl)
+            for (size in 1..3) {
+                val team = members.take(size)
+                val leader = team[0]
+                val report = runBalanceSimulation(
+                    context, leader.first, leader.second, PetState.rawStats(context, leader.first, leader.second)?.xp ?: 0f, attempts,
+                    team.drop(1).map { it.first to it.second }
+                )
+                val floors = report.runs.map { it.floorReached }
+                val combats = report.runs.sumOf { it.combats }; val won = report.runs.sumOf { it.combatsWon }
+                val xp = report.runs.map { it.xpGained }
+                val teamXp = report.runs.map { it.teamXpGained }
+                sb.append(
+                    "  ${if (size == 1) "solo" else "+${size - 1} compañero(s)"}: piso medio %.1f (min %d, max %d, %d de %d llegan al piso %d), XP del explorador %.0f/carrera, XP del equipo entero %.0f/carrera, combates ganados %.1f%%"
+                        .format(floors.average(), floors.min(), floors.max(), floors.count { it >= DungeonState.MAX_FLOOR }, floors.size, DungeonState.MAX_FLOOR,
+                            xp.average(), teamXp.average(), if (combats > 0) won * 100.0 / combats else 0.0)
+                ).append(nl)
+            }
+        }
+        return sb.toString()
     }
 
     /** Informe en texto plano, listo para ensenar en un dialogo o volcar a DebugLog - agrega los
@@ -1831,6 +2566,7 @@ object DungeonSimulator {
         val sb = StringBuilder()
         sb.append("Simulación de ${PetState.displayLabel(report.species)}")
         if (report.shiny) sb.append(" ✨")
+        if (report.companions.isNotEmpty()) sb.append(" + ${report.companions.joinToString(" + ") { PetState.displayLabel(it.first) }}")
         sb.append(" — $n intentos (nivel inicial ${report.startLevel})\n\n")
 
         val floors = runs.map { it.floorReached }

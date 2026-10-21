@@ -4,6 +4,24 @@ import android.content.Context
 import org.json.JSONArray
 import kotlin.random.Random
 
+/** getFloat que no revienta si la clave quedo guardada con otro tipo (un Int/Long de una version
+ *  vieja o de un editor de preferencias): SharedPreferences lanza ClassCastException y, como estas
+ *  lecturas estan en el camino de TODA la interfaz, un solo valor mal tipado dejaba la app sin
+ *  poder abrir la ficha, la mazmorra o los caramelos (ver QaRobust). NaN/infinito tambien se
+ *  tratan como "sin valor" para no propagarse a las barras. */
+internal fun android.content.SharedPreferences.getFloatSafe(key: String, def: Float): Float {
+    val v = try {
+        getFloat(key, def)
+    } catch (e: ClassCastException) {
+        try { getInt(key, 0).toFloat() } catch (e2: ClassCastException) {
+            try { getLong(key, 0L).toFloat() } catch (e3: ClassCastException) {
+                try { getString(key, null)?.toFloatOrNull() ?: def } catch (e4: ClassCastException) { def }
+            }
+        }
+    }
+    return if (v.isNaN() || v.isInfinite()) def else v
+}
+
 /**
  * Estado del Pokemon en SharedPreferences (sincrono, adecuado para el BroadcastReceiver
  * del widget). Stats y xp en Float para acumular decaimiento/tiempo fraccionarios.
@@ -109,8 +127,8 @@ object PetState {
     private const val WAKE_MIN_H = 5f
     private const val WAKE_MAX_H = 10f
 
-    private fun bedtimeHour(context: Context): Float = prefs(context).getFloat(KEY_SLEEP_BEDTIME_H, DEFAULT_BEDTIME_H)
-    private fun wakeHour(context: Context): Float = prefs(context).getFloat(KEY_SLEEP_WAKE_H, DEFAULT_WAKE_H)
+    private fun bedtimeHour(context: Context): Float = prefs(context).getFloatSafe(KEY_SLEEP_BEDTIME_H, DEFAULT_BEDTIME_H)
+    private fun wakeHour(context: Context): Float = prefs(context).getFloatSafe(KEY_SLEEP_WAKE_H, DEFAULT_WAKE_H)
 
     private fun isNightAt(hourFloat: Float, bedH: Float, wakeH: Float): Boolean =
         if (bedH > wakeH) hourFloat >= bedH || hourFloat < wakeH else hourFloat >= bedH && hourFloat < wakeH
@@ -327,7 +345,7 @@ object PetState {
      *  cada ciclo de necesidad tiene su propio umbral, no siempre el mismo. */
     private fun ensureThreshold(context: Context, n: String, key: String): Float {
         val p = prefs(context)
-        val v = p.getFloat(k(n, key), -1f)
+        val v = p.getFloatSafe(k(n, key), -1f)
         if (v > 0f) return v
         val t = rollThreshold(key)
         p.edit().putFloat(k(n, key), t).apply()
@@ -375,6 +393,16 @@ object PetState {
     )
 
     private const val KEY_POKEMON = "pokemon"
+
+    /** Una marca de tiempo guardada anterior a esto (1 ene 2024, antes de que existiera la app)
+     *  es una clave corrupta/sin inicializar, no una fecha real. */
+    private const val MIN_VALID_EPOCH_MS = 1_704_067_200_000L
+    /** Tope de "tiempo sin abrir" que se acredita de golpe (XP por tiempo, guarderia): un ano. */
+    private const val MAX_ABSENCE_MS = 365L * 24L * 3_600_000L
+
+    /** [saved] si es una hora creible (ni anterior a la app ni en el futuro); si no, [now]. */
+    private fun sanitizeClock(saved: Long, now: Long): Long =
+        if (saved < MIN_VALID_EPOCH_MS || saved > now) now else saved
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -464,6 +492,12 @@ object PetState {
      *  guardada en esa slot en concreto) - para que la ficha sepa si ofrecer el selector. */
     fun hasIndividual(context: Context, name: String, shiny: Boolean): Boolean =
         prefs(context).contains(k(slot(name.lowercase(), shiny), KEY_XP))
+
+    /** ¿Tienes AHORA a [name] ([shiny] = normal o shiny, ver slot())? Es decir, un individuo vivo: uno que ya
+     *  evoluciono a otra cosa sigue contando para la Pokedex pero no es un Pokemon que tengas. Es lo que marca
+     *  la Pokeball del selector de evolucion y lo que avisa antes de que una evolucion pise a quien ya tienes. */
+    fun ownsLiveIndividual(context: Context, name: String, shiny: Boolean): Boolean =
+        hasIndividual(context, name, shiny) && !hasEvolvedAway(context, name, shiny)
 
     /** Que individuo (normal o shiny) representa a [name] cuando hace falta UNO solo (ordenar,
      *  vitrina de mecanicas...) y no hay una ficha concreta abierta de la que heredar la
@@ -555,6 +589,15 @@ object PetState {
         migrate(context)
         val base = name.lowercase()
         val n = slot(base, shiny)
+        // Un explorador de la mazmorra no puede ser a la vez el activo del widget (la interfaz ya lo bloquea en selectPokemon): la API
+        // tampoco lo permite, para que ningun otro camino deje al mismo individuo en los dos sitios (QaConflicts).
+        if (DungeonState.isInParty(context, base, shiny) && !(currentPokemon(context) == base && isActiveShiny(context) == shiny)) {
+            DebugLog.log(context, "setPokemon($base, shiny=$shiny) ignorado: esta en la mazmorra")
+            return
+        }
+        // Pasar a cuidarlo a mano lo SACA de la guarderia (cobra antes lo que llevara y su reloj
+        // vuelve a "ahora": el tiempo que estuvo dentro no cuenta otra vez como XP del activo).
+        if (isInNursery(context, base, shiny)) nurseryRemove(context, base, shiny)
         unlock(context, base)
         val p = prefs(context)
         // Palafin: en el juego real pasa a Forma Heroe la primera vez que se le retira sin
@@ -627,7 +670,7 @@ object PetState {
         val n = slot(base, shiny)
         val p = prefs(context)
         if (!p.contains(k(n, KEY_XP))) return null
-        return levelOf(context, p.getFloat(k(n, KEY_XP), 0f), base)
+        return levelOf(context, p.getFloatSafe(k(n, KEY_XP), 0f), base)
     }
 
     /** Stats CONGELADAS de una especie (tal cual quedaron guardadas la ultima vez), SIN aplicar
@@ -639,7 +682,7 @@ object PetState {
      *  Gigantamax (no cambia de individuo activo, sigue sumando el mismo). Se congela (deja de
      *  subir) en cuanto deja de ser el activo, igual que el resto de sus stats (ver rawStats). */
     fun careHours(context: Context, name: String, shiny: Boolean = false): Float =
-        prefs(context).getFloat(k(slot(name.lowercase(), shiny), KEY_CARE_HOURS), 0f)
+        prefs(context).getFloatSafe(k(slot(name.lowercase(), shiny), KEY_CARE_HOURS), 0f)
 
     /** Suma [hours] al tiempo de cuidado del individuo [name]/[shiny] cuando pasa FUERA del widget
      *  (hoy: explorando la mazmorra, ver DungeonSimulator.accrueCareTick) - pedido explicito del
@@ -655,7 +698,7 @@ object PetState {
             val n = slot(base, shiny)
             if (!p.contains(k(n, KEY_XP)) || hasEvolvedAway(context, base, shiny)) return
             if (currentPokemon(context) == base && isActiveShiny(context) == shiny) return
-            p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloat(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
+            p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloatSafe(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
         }
     }
 
@@ -669,9 +712,9 @@ object PetState {
         // el activo del widget: NO debe cambiar (ya suma por su cuenta en loadWithDecay)
         run {
             val key = k(slot(activeName, activeShiny), KEY_CARE_HOURS)
-            val before = p.getFloat(key, 0f)
+            val before = p.getFloatSafe(key, 0f)
             addCareHours(context, activeName, activeShiny, 1f)
-            val after = p.getFloat(key, 0f)
+            val after = p.getFloatSafe(key, 0f)
             sb.append("activo $activeName(shiny=$activeShiny): $before -> $after ${if (before == after) "OK (no se duplica)" else "FALLO"}" + System.lineSeparator())
         }
         // un individuo NO activo (el explorador de la mazmorra si hay, si no el primero que exista)
@@ -681,12 +724,12 @@ object PetState {
         if (other == null) { sb.append("no hay otro individuo para probar"); return sb.toString() }
         val key = k(slot(other.first, other.second), KEY_CARE_HOURS)
         val had = p.contains(key)
-        val before = p.getFloat(key, 0f)
+        val before = p.getFloatSafe(key, 0f)
         addCareHours(context, other.first, other.second, 1f / 60f)
-        val after = p.getFloat(key, 0f)
+        val after = p.getFloatSafe(key, 0f)
         sb.append("no activo ${other.first}(shiny=${other.second}): $before -> $after ${if (Math.abs((after - before) - 1f / 60f) < 1e-5f) "OK (+1 min)" else "FALLO"}" + System.lineSeparator())
         if (had) p.edit().putFloat(key, before).commit() else p.edit().remove(key).commit()
-        sb.append("restaurado: ${p.getFloat(key, 0f) == before}")
+        sb.append("restaurado: ${p.getFloatSafe(key, 0f) == before}")
         return sb.toString()
     }
 
@@ -694,12 +737,12 @@ object PetState {
         val n = slot(name.lowercase(), shiny)
         val p = prefs(context)
         if (!p.contains(k(n, KEY_XP))) return null
-        val xp = try { p.getFloat(k(n, KEY_XP), 0f) } catch (e: ClassCastException) { p.getInt(k(n, KEY_XP), 0).toFloat() }
+        // Fuera de rango (un valor corrupto o guardado a mano) se recorta: las barras valen 0..100 y la XP no es negativa.
         return Stats(
-            health = p.getFloat(k(n, KEY_HEALTH), 100f),
-            hygiene = p.getFloat(k(n, KEY_HYGIENE), 100f),
-            happiness = p.getFloat(k(n, KEY_HAPPINESS), 100f),
-            xp = xp
+            health = p.getFloatSafe(k(n, KEY_HEALTH), 100f).coerceIn(0f, 100f),
+            hygiene = p.getFloatSafe(k(n, KEY_HYGIENE), 100f).coerceIn(0f, 100f),
+            happiness = p.getFloatSafe(k(n, KEY_HAPPINESS), 100f).coerceIn(0f, 100f),
+            xp = p.getFloatSafe(k(n, KEY_XP), 0f).coerceAtLeast(0f)
         )
     }
 
@@ -709,10 +752,10 @@ object PetState {
         if (p.getBoolean("migrated_v2", false)) return
         val e = p.edit().putBoolean("migrated_v2", true)
         if (p.contains(KEY_XP) && !p.contains(k("pikachu", KEY_XP))) {
-            val oldXp = try { p.getFloat(KEY_XP, 0f) } catch (ex: Exception) { p.getInt(KEY_XP, 0).toFloat() }
-            e.putFloat(k("pikachu", KEY_HEALTH), p.getFloat(KEY_HEALTH, 100f))
-                .putFloat(k("pikachu", KEY_HYGIENE), p.getFloat(KEY_HYGIENE, 100f))
-                .putFloat(k("pikachu", KEY_HAPPINESS), p.getFloat(KEY_HAPPINESS, 100f))
+            val oldXp = try { p.getFloatSafe(KEY_XP, 0f) } catch (ex: Exception) { p.getInt(KEY_XP, 0).toFloat() }
+            e.putFloat(k("pikachu", KEY_HEALTH), p.getFloatSafe(KEY_HEALTH, 100f))
+                .putFloat(k("pikachu", KEY_HYGIENE), p.getFloatSafe(KEY_HYGIENE, 100f))
+                .putFloat(k("pikachu", KEY_HAPPINESS), p.getFloatSafe(KEY_HAPPINESS, 100f))
                 .putFloat(k("pikachu", KEY_XP), oldXp)
                 .putLong(k("pikachu", KEY_LAST), p.getLong(KEY_LAST, System.currentTimeMillis()))
         }
@@ -741,8 +784,12 @@ object PetState {
         val species = currentPokemon(context)   // para tablas por ESPECIE (personalidad, tipo, curva de nivel...)
         val n = currentSlot(context)            // para el progreso de VERDAD del individuo activo
         val now = System.currentTimeMillis()
-        val last0 = p.getLong(k(n, KEY_LAST), now)
-        val hours = (now - last0).coerceAtLeast(0L) / 3_600_000f          // para xp (tiempo real)
+        // Un reloj guardado imposible (0 / 1970 por una clave corrupta, o en el futuro por un
+        // movil con la hora adelantada y luego corregida) NO es "una ausencia de 55 anos": se
+        // trata como "ahora" (QaRobust: 1970 regalaba 19,9 M XP de golpe). Una ausencia real,
+        // por larga que sea, se respeta hasta un tope de un ano.
+        val last0 = sanitizeClock(p.getLong(k(n, KEY_LAST), now), now)
+        val hours = (now - last0).coerceIn(0L, MAX_ABSENCE_MS) / 3_600_000f   // para xp (tiempo real)
         val last = last0.coerceAtLeast(now - 48L * 3_600_000L)            // integrar decaimiento max 48h
 
         // Dentro de la "gracia" (compruebas el Pokemon con cierta frecuencia) el decaimiento
@@ -750,19 +797,22 @@ object PetState {
         val floorNow = if (hours < FLOOR_GRACE_H) FLOOR else 0f
         val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, species)
         val bedH = bedtimeHour(context); val wakeH = wakeHour(context)
-        val health = (p.getFloat(k(n, KEY_HEALTH), 100f) - decayOver(last, now, HEALTH_DAY*mHealth, HEALTH_NIGHT*mHealth, bedH, wakeH)).coerceIn(floorNow, 100f)
-        val hygiene = (p.getFloat(k(n, KEY_HYGIENE), 100f) - decayOver(last, now, HYGIENE_DAY*mHygiene, HYGIENE_NIGHT*mHygiene, bedH, wakeH)).coerceIn(floorNow, 100f)
-        val happiness = (p.getFloat(k(n, KEY_HAPPINESS), 100f) - decayOver(last, now, HAPPY_DAY*mHappy, HAPPY_NIGHT*mHappy, bedH, wakeH)).coerceIn(floorNow, 100f)
+        val health = (p.getFloatSafe(k(n, KEY_HEALTH), 100f) - decayOver(last, now, HEALTH_DAY*mHealth, HEALTH_NIGHT*mHealth, bedH, wakeH)).coerceIn(floorNow, 100f)
+        val hygiene = (p.getFloatSafe(k(n, KEY_HYGIENE), 100f) - decayOver(last, now, HYGIENE_DAY*mHygiene, HYGIENE_NIGHT*mHygiene, bedH, wakeH)).coerceIn(floorNow, 100f)
+        val happiness = (p.getFloatSafe(k(n, KEY_HAPPINESS), 100f) - decayOver(last, now, HAPPY_DAY*mHappy, HAPPY_NIGHT*mHappy, bedH, wakeH)).coerceIn(floorNow, 100f)
         val xpStored = try {
-            p.getFloat(k(n, KEY_XP), 0f)
+            p.getFloatSafe(k(n, KEY_XP), 0f)
         } catch (e: ClassCastException) {
             p.getInt(k(n, KEY_XP), 0).toFloat()
         }
-        val xp = xpStored + TIME_XP_PER_H * hours * xpMultiplier(context, species)   // el nivel sube con el tiempo
+        val xpRaw = xpStored + TIME_XP_PER_H * hours * xpMultiplier(context, species)   // el nivel sube con el tiempo
+        // Al nivel 100 ya no cabe mas: lo que sobra se guarda como XP sobrante (se convierte en caramelos, ver bankOverflowXp).
+        val (xp, xpOverflow) = capXpAtMaxLevel(context, species, xpStored, xpRaw)
+        bankOverflowXp(context, xpOverflow)
 
         val stats = Stats(health, hygiene, happiness, xp)
         save(context, stats, now)
-        p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloat(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
+        p.edit().putFloat(k(n, KEY_CARE_HOURS), p.getFloatSafe(k(n, KEY_CARE_HOURS), 0f) + hours).apply()
         val lvl = levelOf(context, xp, species)
         maybeAdvanceZygardeForme(context, species, lvl)
         maybeAdvanceTerapagos(context, species, lvl)
@@ -905,7 +955,9 @@ object PetState {
             val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, currentPokemon(context))
             sideEffectFor(action, mHealth, mHappy, mHygiene)?.invoke(s)
             val xpGained = ACTION_XP * xpMultiplier(context, currentPokemon(context))
-            s.xp += xpGained
+            val (xpNew, xpOver) = capXpAtMaxLevel(context, currentPokemon(context), s.xp, s.xp + xpGained)
+            s.xp = xpNew
+            bankOverflowXp(context, xpOver)
             val leveledUp = levelOf(context, s.xp, currentPokemon(context)) > levelBefore
             // durable=true (commit sincrono): esta escritura tiene que estar en disco YA al volver
             // de onReceive. Con apply() (asincrono) existia una rendija teorica: si MIUI mata el
@@ -1038,7 +1090,7 @@ object PetState {
             val original = loadWithDecay(context)
             val originalBg = currentBg(context)
             val threshKeys = listOf(KEY_THRESH_HEALTH, KEY_THRESH_HYGIENE, KEY_THRESH_HAPPY)
-            val originalThresholds = threshKeys.associateWith { p.getFloat(k(species, it), -1f) }
+            val originalThresholds = threshKeys.associateWith { p.getFloatSafe(k(species, it), -1f) }
             // Un fondo que NO beneficia a esta especie (para medir el x1) - el primero de la
             // lista de fondos por tipo que ninguno de sus tipos tiene asignado.
             val myTypes = typesOf(context, species)
@@ -1131,16 +1183,770 @@ object PetState {
      *  explorando. NO toca health/hygiene/happiness (la vida EN LA MAZMORRA es un concepto aparte,
      *  ver DungeonState) - parte de rawStats (congeladas, sin decaimiento, igual que
      *  debugSetIndividualStats) en vez de loadWithDecay. Devuelve el nivel resultante. */
-    fun grantXpToIndividual(context: Context, name: String, shiny: Boolean, amount: Float): Int = synchronized(statsWriteLock) {
+    fun grantXpToIndividual(context: Context, name: String, shiny: Boolean, amount: Float, durable: Boolean = true): Int = synchronized(statsWriteLock) {
         val base = name.lowercase()
         val n = slot(base, shiny)
+        // Solo a un individuo que EXISTE y sigue vivo como esa especie: antes, con uno inexistente,
+        // se escribia una clave de XP suelta y nacia un "individuo fantasma" sin id ni genero (y la
+        // especie quedaba desbloqueada, ver hasIndividual).
+        if (!prefs(context).contains(k(n, KEY_XP)) || hasEvolvedAway(context, base, shiny)) {
+            return@synchronized levelOf(context, 0f, base)
+        }
         val current = rawStats(context, base, shiny) ?: Stats(75f, 75f, 75f, 0f)
-        val newXp = (current.xp + amount).coerceAtLeast(0f)
-        prefs(context).edit()
+        // Al nivel 100 ya no cabe mas XP: lo que sobra va al contador de XP sobrante (se convierte en caramelos, ver bankOverflowXp).
+        val (newXp, overflow) = capXpAtMaxLevel(context, base, current.xp, (current.xp + amount).coerceAtLeast(0f))
+        val editor = prefs(context).edit()
             .putFloat(k(n, KEY_XP), newXp)
             .putLong(k(n, KEY_LAST), System.currentTimeMillis())
-            .commit()
+        // durable=false (apply): el valor queda al instante en memoria y se escribe a disco en segundo plano; lo usa la puesta al dia de la
+        // mazmorra, que concede miles de XP seguidas y esperaba al disco en cada una (con [flushWrites] al terminar).
+        if (durable) editor.commit() else editor.apply()
+        bankOverflowXp(context, overflow)
         levelOf(context, newXp, base)
+    }
+
+    /** Espera a que las escrituras pendientes (apply) lleguen a disco: cierra un lote de [grantXpToIndividual] con durable=false. */
+    fun flushWrites(context: Context) {
+        prefs(context).edit().commit()
+    }
+
+    /** Da [amount] de XP al Pokemon ACTIVO sin perder lo que tuviera pendiente por tiempo:
+     *  [grantXpToIndividual] parte de las stats GUARDADAS y pone `last_update = ahora`, asi que sobre
+     *  el activo borraba la XP por tiempo y el decaimiento acumulados desde el ultimo guardado.
+     *  Aqui se liquida primero (loadWithDecay) y despues se suma, con el mismo patron que
+     *  tryApplyAction. Nivel 100: no se aplica nada (applied=false) y la XP va al contador de XP sobrante. */
+    fun grantXpToActive(context: Context, amount: Float): ActionResult = synchronized(statsWriteLock) {
+        if (amount <= 0f) return@synchronized ActionResult(false, false, 0f)
+        val species = currentPokemon(context)
+        val s = loadWithDecay(context)
+        val levelBefore = levelOf(context, s.xp, species)
+        if (levelBefore >= MAX_LEVEL) { bankOverflowXp(context, amount); return@synchronized ActionResult(false, false, 0f) }   // ya no cabe: XP sobrante
+        val (xpNew, xpOver) = capXpAtMaxLevel(context, species, s.xp, s.xp + amount)
+        s.xp = xpNew
+        bankOverflowXp(context, xpOver)
+        val leveledUp = levelOf(context, s.xp, species) > levelBefore
+        save(context, s, System.currentTimeMillis(), durable = true)
+        ActionResult(true, leveledUp, amount)
+    }
+
+    // ==================== XP SOBRANTE (NIVEL 100) -> CARAMELOS ====================
+    // Un Pokemon al nivel 100 ya no puede subir: su XP (por tiempo, cuidados, guarderia, mazmorra, huevos) se guarda en un contador
+    // global y cada OVERFLOW_XP_PER_CANDY se convierte en un caramelo de la mochila, que se puede dar a otro Pokemon. La conversion
+    // pierde valor a proposito (un caramelo vale ~5-30 XP al que lo come, ver CANDY_PCT_OF_NEXT_LEVEL): ~5-15 % de lo que se gano.
+    private const val KEY_OVERFLOW_XP = "overflow_xp"
+    private const val OVERFLOW_XP_PER_CANDY = 200f
+
+    /** XP sobrante acumulada que aun no llega a un caramelo (0 .. OVERFLOW_XP_PER_CANDY). */
+    fun overflowXp(context: Context): Float = prefs(context).getFloatSafe(KEY_OVERFLOW_XP, 0f)
+    fun overflowXpPerCandy(): Float = OVERFLOW_XP_PER_CANDY
+
+    /** Recorta la XP de [species] a la de nivel 100: devuelve (XP que se guarda, XP sobrante que ya no cabe). Quien ya estaba por encima del
+     *  tope (guardado antes de este cambio) conserva su XP y TODO lo que gane es sobrante. */
+    private fun capXpAtMaxLevel(context: Context, species: String, before: Float, after: Float): Pair<Float, Float> {
+        if (after <= before) return after to 0f
+        val cap = cumXp(MAX_LEVEL, context, species)
+        if (after <= cap) return after to 0f
+        val fit = (cap - before).coerceAtLeast(0f)
+        return (if (before >= cap) before else cap) to ((after - before) - fit)
+    }
+
+    /** Suma [amount] al contador de XP sobrante y convierte en caramelos cada OVERFLOW_XP_PER_CANDY completo (si la mochila ya esta
+     *  desbloqueada; si no, se guarda para cuando lo este). */
+    private fun bankOverflowXp(context: Context, amount: Float) {
+        if (amount <= 0.001f) return
+        synchronized(statsWriteLock) {
+            val p = prefs(context)
+            var pool = p.getFloatSafe(KEY_OVERFLOW_XP, 0f) + amount
+            var candies = 0
+            // (candiesUnlocked recorre todas las preferencias: solo se pregunta cuando ya hay para un caramelo)
+            if (pool >= OVERFLOW_XP_PER_CANDY && candiesUnlocked(context)) {
+                candies = (pool / OVERFLOW_XP_PER_CANDY).toInt()
+                pool -= candies * OVERFLOW_XP_PER_CANDY
+            }
+            val e = p.edit().putFloat(KEY_OVERFLOW_XP, pool)
+            if (candies > 0) e.putInt(KEY_CANDY_COUNT, candyCount(context) + candies)
+            e.apply()
+            if (candies > 0) DebugLog.log(context, "mochila: XP sobrante de Pokemon al nivel 100 convertida en $candies caramelo(s) (quedan ${pool.toInt()} XP)")
+        }
+    }
+
+    // ==================== MOCHILA Y CARAMELOS ====================
+    // Se desbloquea con el nivel de entrenador (UNLOCK_CANDIES_LEVEL). Un caramelo es XP "en
+    // lata" para cualquier Pokemon tuyo: vale un % del coste de su SIGUIENTE nivel (proporcional al
+    // nivel, como pidio el usuario - un valor fijo seria trivial a nivel alto y regalaria niveles
+    // a nivel bajo), con un minimo. Hoy se consigue soltando un huevo (ver releaseEggForCandy); la
+    // guarderia dara los de sus huevos. Valores a ajustar con el uso.
+    private const val KEY_CANDY_COUNT = "candy_count"
+    private const val CANDY_PCT_OF_NEXT_LEVEL = 0.03f
+    private const val CANDY_MIN_XP = 5f
+
+    fun candyPctOfNextLevel(): Float = CANDY_PCT_OF_NEXT_LEVEL
+    fun candyMinXp(): Float = CANDY_MIN_XP
+
+    fun candiesUnlocked(context: Context): Boolean = trainerLevelMaxFresh(context) >= UNLOCK_CANDIES_LEVEL
+
+    fun candyCount(context: Context): Int = prefs(context).getInt(KEY_CANDY_COUNT, 0)
+
+    fun addCandies(context: Context, n: Int) {
+        if (n <= 0) return
+        synchronized(statsWriteLock) {
+            prefs(context).edit().putInt(KEY_CANDY_COUNT, candyCount(context) + n).commit()
+        }
+    }
+
+    /** XP que cuesta pasar del nivel en que esta [xp] al siguiente (null si ya es nivel 100). */
+    fun costToNextLevel(context: Context, xp: Float, name: String): Float? {
+        val l = levelOf(context, xp, name)
+        if (l >= MAX_LEVEL) return null
+        return cumXp(l + 1, context, name) - cumXp(l, context, name)
+    }
+
+    /** XP que daria ahora un caramelo a un Pokemon de especie [name] con [xp] (null si nivel 100). */
+    fun candyXpFor(context: Context, name: String, xp: Float): Float? =
+        costToNextLevel(context, xp, name)?.let { maxOf(CANDY_MIN_XP, it * CANDY_PCT_OF_NEXT_LEVEL) }
+
+    /** [used] = cuantos caramelos se gastaron (varios de golpe, ver [useCandies]); [xp] es la XP TOTAL de todos ellos. */
+    data class CandyUse(val xp: Float, val leveledUp: Boolean, val newLevel: Int, val used: Int = 1)
+
+    /** Lo que pasaria al darle [used] caramelos seguidos a un Pokemon (ver [candyPlan]): XP total y nivel/progreso antes y despues. */
+    data class CandyPlan(val used: Int, val xpGained: Float, val levelBefore: Int, val levelAfter: Int, val progressBefore: Float, val progressAfter: Float)
+
+    /** Simula, SIN tocar nada, hasta [n] caramelos seguidos para [name]/[shiny]: cada uno vale el 3 % (min 5 XP) del coste del nivel en
+     *  el que esta en ese momento, asi que el total NO es n x el primero. Se para antes si llega al nivel 100 (el caramelo ya no vale:
+     *  [used] sale menor que [n]). Null si no existe / ya evoluciono. Para el activo parte de su XP con el tiempo pendiente incluido. */
+    fun candyPlan(context: Context, name: String, shiny: Boolean, n: Int): CandyPlan? {
+        val base = name.lowercase()
+        if (!hasIndividual(context, base, shiny) || hasEvolvedAway(context, base, shiny)) return null
+        val isActive = currentPokemon(context) == base && isActiveShiny(context) == shiny
+        val xp0 = if (isActive) loadWithDecay(context).xp else (rawStats(context, base, shiny)?.xp ?: return null)
+        var xp = xp0
+        var used = 0
+        while (used < n) {
+            val gain = candyXpFor(context, base, xp) ?: break
+            xp += gain; used++
+        }
+        return CandyPlan(used, xp - xp0, levelOf(context, xp0, base), levelOf(context, xp, base), progressOf(context, xp0, base), progressOf(context, xp, base))
+    }
+
+    /** Gasta hasta [n] caramelos de golpe en el individuo [name]/[shiny] (los que hagan falta si antes llega al nivel 100). La XP total se
+     *  da de una vez (una sola escritura). Null en los mismos casos que [useCandy]. [CandyUse.used] dice cuantos se gastaron de verdad. */
+    fun useCandies(context: Context, name: String, shiny: Boolean, n: Int): CandyUse? = synchronized(statsWriteLock) {
+        val have = candyCount(context)
+        if (have <= 0 || n <= 0) return@synchronized null
+        val base = name.lowercase()
+        if (!hasIndividual(context, base, shiny) || hasEvolvedAway(context, base, shiny)) return@synchronized null
+        val isActive = currentPokemon(context) == base && isActiveShiny(context) == shiny
+        val plan = candyPlan(context, base, shiny, minOf(n, have)) ?: return@synchronized null
+        if (plan.used <= 0) return@synchronized null
+        if (isActive) {
+            if (!grantXpToActive(context, plan.xpGained).applied) return@synchronized null
+        } else {
+            grantXpToIndividual(context, base, shiny, plan.xpGained)
+        }
+        prefs(context).edit().putInt(KEY_CANDY_COUNT, have - plan.used).commit()
+        CandyUse(plan.xpGained, plan.levelAfter > plan.levelBefore, plan.levelAfter, plan.used)
+    }
+
+    /** Gasta UN caramelo en el individuo [name]/[shiny]. Null si no hay caramelos, el individuo no
+     *  existe o ya evoluciono, o esta en nivel 100. El activo pasa por [grantXpToActive] (no pierde su XP
+     *  por tiempo pendiente); el resto, por [grantXpToIndividual]. */
+    fun useCandy(context: Context, name: String, shiny: Boolean): CandyUse? = useCandies(context, name, shiny, 1)
+
+    /** SOLO PARA PRUEBAS (ver PokeWidgetProvider.ACTION_DEBUG_BAG_CHECK): comprueba el nivel de
+     *  entrenador guardado y que [useCandy] suma lo esperado, tanto a un Pokemon NO activo como al
+     *  ACTIVO con 1 h de XP por tiempo pendiente (que NO debe perderse). Deja la partida EXACTAMENTE
+     *  como estaba (caramelos, XP, barras, reloj y horas de cuidado). Devuelve el informe. */
+    fun debugCandySelfTest(context: Context): String {
+        val p = prefs(context)
+        val nl = System.lineSeparator()
+        val sb = StringBuilder()
+        val (max, _) = noteTrainerLevel(context)
+        sb.append("nivel de entrenador: actual=${trainerLevel(context)} maximo guardado=$max mochila=${if (candiesUnlocked(context)) "desbloqueada" else "BLOQUEADA"}").append(nl)
+        val candiesBefore = candyCount(context)
+        p.edit().putInt(KEY_CANDY_COUNT, candiesBefore + 2).commit()
+        val activeName = currentPokemon(context); val activeShiny = isActiveShiny(context)
+        // --- 1) un Pokemon que NO es el activo
+        val other = ownedIndividuals(context).firstOrNull { (n, s) ->
+            !(n == activeName && s == activeShiny) && (levelForPokemon(context, n, s) ?: 100) < 100
+        }
+        if (other == null) sb.append("no hay otro Pokemon para probar").append(nl)
+        else {
+            val xpKey = k(slot(other.first, other.second), KEY_XP)
+            val xpBefore = rawStats(context, other.first, other.second)?.xp ?: 0f
+            val expected = candyXpFor(context, other.first, xpBefore) ?: 0f
+            val use = useCandy(context, other.first, other.second)
+            val xpAfter = rawStats(context, other.first, other.second)?.xp ?: 0f
+            val ok = use != null && Math.abs(xpAfter - xpBefore - expected) < 0.01f
+            sb.append("no activo ${other.first}: xp $xpBefore -> $xpAfter (esperado +$expected) ${if (ok) "OK" else "FALLO"}").append(nl)
+            p.edit().putFloat(xpKey, xpBefore).commit()
+        }
+        // --- 2) el activo, con 1 h de XP por tiempo pendiente
+        run {
+            val n = currentSlot(context)
+            val snap = listOf(KEY_HEALTH, KEY_HYGIENE, KEY_HAPPINESS, KEY_XP, KEY_CARE_HOURS).associateWith { p.getFloatSafe(k(n, it), 0f) }
+            val lastSnap = p.getLong(k(n, KEY_LAST), System.currentTimeMillis())
+            // El reloj del activo parte de AHORA: si llevaba dias sin cuidarse (cuenta de pruebas), su XP por tiempo pendiente ya era enorme y
+            // la comprobacion "1 h pendiente" daba un falso FALLO (esperaba +40 y habia +970 de dias). Se restaura abajo con lastSnap.
+            p.edit().putLong(k(n, KEY_LAST), System.currentTimeMillis()).commit()
+            debugSkipHours(context, 1f)
+            val passive = TIME_XP_PER_H * 1f * xpMultiplier(context, activeName)
+            val xpBefore = p.getFloatSafe(k(n, KEY_XP), 0f)
+            val use = useCandy(context, activeName, activeShiny)
+            val xpAfter = p.getFloatSafe(k(n, KEY_XP), 0f)
+            // Tolerancia: loadWithDecay suma el tiempo REAL transcurrido (milisegundos) ademas de la hora simulada.
+            val expected = xpBefore + passive + (use?.xp ?: 0f)
+            val ok = use != null && Math.abs(xpAfter - expected) < 1f
+            sb.append("activo $activeName: xp $xpBefore -> $xpAfter (esperado ~$expected = +${passive.toInt()} por la hora pendiente + ${use?.xp ?: 0f} del caramelo) ${if (ok) "OK (no pierde el XP por tiempo)" else "FALLO"}").append(nl)
+            val e = p.edit()
+            snap.forEach { (key, v) -> e.putFloat(k(n, key), v) }
+            e.putLong(k(n, KEY_LAST), lastSnap).commit()
+        }
+        p.edit().putInt(KEY_CANDY_COUNT, candiesBefore).commit()
+        sb.append("restaurado: caramelos=${candyCount(context)} (antes $candiesBefore)")
+        return sb.toString()
+    }
+
+    /** SOLO PRUEBAS: comprueba el contador de XP sobrante (nivel 100 -> caramelos) con un Pokemon NO activo y con el ACTIVO, y deja caramelos,
+     *  contador, XP, barras y reloj EXACTAMENTE como estaban. Devuelve el informe. */
+    fun debugOverflowSelfTest(context: Context): String {
+        val p = prefs(context)
+        val nl = System.lineSeparator()
+        val sb = StringBuilder()
+        if (!candiesUnlocked(context)) return "mochila bloqueada: no se puede probar la conversion en caramelos"
+        val candiesBefore = candyCount(context); val poolBefore = overflowXp(context)
+        val activeName = currentPokemon(context); val activeShiny = isActiveShiny(context)
+        fun setPool(v: Float) = p.edit().putFloat(KEY_OVERFLOW_XP, v).commit()
+        setPool(0f)
+        val other = ownedIndividuals(context).firstOrNull { (n, s) -> !(n == activeName && s == activeShiny) && !isInNursery(context, n, s) && !DungeonState.isInParty(context, n, s) }
+        if (other == null) { setPool(poolBefore); return "no hay otro Pokemon para probar" }
+        val (on, os) = other
+        val xpOther = rawStats(context, on, os)?.xp ?: 0f
+        val cap = cumXp(MAX_LEVEL, context, on)
+        // 1) ya al nivel 100: TODA la XP es sobrante (1000 XP = 5 caramelos con 200 por caramelo)
+        debugSetIndividualStats(context, on, os, xp = cap)
+        val c1 = candyCount(context)
+        grantXpToIndividual(context, on, os, 1000f)
+        val xp1 = rawStats(context, on, os)?.xp ?: 0f
+        val ok1 = xp1 == cap && candyCount(context) == c1 + 5 && overflowXp(context) < 0.01f
+        sb.append("nivel 100 +1000 XP: xp $xp1 (tope $cap), caramelos ${candyCount(context) - c1} (esperado 5), contador ${overflowXp(context)} ${if (ok1) "OK" else "FALLO"}").append(nl)
+        // 2) cruzando el 100: solo lo que no cabe es sobrante (cabian 100 de los 350 -> 250 = 1 caramelo y quedan 50)
+        setPool(0f)
+        debugSetIndividualStats(context, on, os, xp = cap - 100f)
+        val c2 = candyCount(context)
+        grantXpToIndividual(context, on, os, 350f)
+        val xp2 = rawStats(context, on, os)?.xp ?: 0f
+        val ok2 = Math.abs(xp2 - cap) < 0.01f && candyCount(context) == c2 + 1 && Math.abs(overflowXp(context) - 50f) < 0.01f
+        sb.append("Nv99 (a 100 XP del tope) +350 XP: xp ${"%.1f".format(xp2)} (tope ${"%.1f".format(cap)}), caramelos ${candyCount(context) - c2} (esperado 1), contador ${overflowXp(context)} (esperado 50) ${if (ok2) "OK" else "FALLO"}").append(nl)
+        // 3) el ACTIVO en nivel 100 con 2 h de XP por tiempo pendiente: su XP no sube y el contador recoge ~2 h
+        run {
+            val n = currentSlot(context)
+            val snap = listOf(KEY_HEALTH, KEY_HYGIENE, KEY_HAPPINESS, KEY_XP, KEY_CARE_HOURS).associateWith { p.getFloatSafe(k(n, it), 0f) }
+            val lastSnap = p.getLong(k(n, KEY_LAST), System.currentTimeMillis())
+            val capA = cumXp(MAX_LEVEL, context, activeName)
+            setPool(0f)
+            p.edit().putFloat(k(n, KEY_XP), capA).putLong(k(n, KEY_LAST), System.currentTimeMillis()).commit()
+            debugSkipHours(context, 2f)
+            val s = loadWithDecay(context)
+            val expected = TIME_XP_PER_H * 2f * xpMultiplier(context, activeName)
+            val ok = s.xp == capA && Math.abs(overflowXp(context) - expected) < 1f
+            sb.append("activo $activeName en nivel 100 con 2 h pendientes: xp ${s.xp} (tope $capA), contador ${"%.1f".format(overflowXp(context))} (esperado ~${"%.1f".format(expected)}) ${if (ok) "OK" else "FALLO"}").append(nl)
+            val e = p.edit()
+            snap.forEach { (key, v) -> e.putFloat(k(n, key), v) }
+            e.putLong(k(n, KEY_LAST), lastSnap).commit()
+        }
+        debugSetIndividualStats(context, on, os, xp = xpOther)
+        p.edit().putInt(KEY_CANDY_COUNT, candiesBefore).putFloat(KEY_OVERFLOW_XP, poolBefore).commit()
+        sb.append("restaurado: caramelos=${candyCount(context)} (antes $candiesBefore), contador=${overflowXp(context)} (antes $poolBefore)")
+        return sb.toString()
+    }
+
+    /** SOLO PARA EL MENU DEBUG / adb (ver PokeWidgetProvider.ACTION_DEBUG_NURSERY_CHECK): prueba en el
+     *  movil el camino de la guarderia con datos reales y lo deja TODO como estaba. Cubre meter/sacar,
+     *  los bloqueos y el cobro de XP por tiempo (adelantando 3 h el reloj de la guarderia). NO prueba los
+     *  huevos (podrian crear un shiny de verdad): la puesta/eclosion se cubre con NurseryRulesTest.
+     *  Si la guarderia ya tiene Pokemon de verdad, se salta la parte del reloj para no regalarles XP. */
+    fun debugNurserySelfTest(context: Context): String {
+        val p = prefs(context)
+        val nl = System.lineSeparator()
+        val sb = StringBuilder()
+        val activeName = currentPokemon(context); val activeShiny = isActiveShiny(context)
+        // --- instantanea de todo lo que se va a tocar
+        val setBefore = p.getStringSet(KEY_NURSERY_SET, null)?.toSet()
+        val hadSet = p.contains(KEY_NURSERY_SET)
+        val xpLastBefore = p.getLong(KEY_NURSERY_XP_LAST, 0L)
+        val eggLastBefore = p.getLong(KEY_NURSERY_EGG_LAST, 0L)
+        val careLastBefore = p.getLong(KEY_NURSERY_CARE_LAST, 0L)
+        val hadTrainerMax = p.contains(KEY_TRAINER_LEVEL_MAX)
+        val trainerMaxBefore = p.getInt(KEY_TRAINER_LEVEL_MAX, 1)
+        val candiesBefore = candyCount(context)
+        val realMembers = nurseryMembers(context)
+        sb.append("nivel de entrenador: actual=${trainerLevel(context)} maximo guardado=$trainerMaxBefore plazas=${nurseryCapacity(context)} guarderia ${if (nurseryUnlocked(context)) "desbloqueada" else "BLOQUEADA (se fuerza el nivel 9 durante la prueba)"}; dentro ahora: ${realMembers.size}").append(nl)
+        if (!nurseryUnlocked(context)) p.edit().putInt(KEY_TRAINER_LEVEL_MAX, maxOf(trainerMaxBefore, 9)).commit()
+
+        val candidates = ownedIndividuals(context).filter { (n, s) ->
+            !(n == activeName && s == activeShiny) && !isInNursery(context, n, s) &&
+                (levelForPokemon(context, n, s) ?: 100) < 100 && nurseryBlockReason(context, n, s) == null
+        }
+        val parent = candidates.firstOrNull()
+        if (parent == null) {
+            sb.append("no hay ningun Pokemon libre para probar la guarderia")
+        } else {
+            val (pn, ps) = parent
+            val pSlot = slot(pn, ps)
+            val xpKey = k(pSlot, KEY_XP); val lastKey = k(pSlot, KEY_LAST)
+            val xpBefore = p.getFloatSafe(xpKey, 0f)
+            val lastBefore = p.getLong(lastKey, 0L)
+            val statsBefore = rawStats(context, pn, ps)   // las necesidades tambien cambian durante la prueba
+            val eggKey = KEY_EGG_DISABLED_PREFIX + pn.lowercase()
+            val eggFlagBefore = p.getBoolean(eggKey, false)
+            val hadEggFlag = p.contains(eggKey)
+            p.edit().putBoolean(eggKey, true).commit()   // sin puesta: asi la prueba no puede crear un shiny de verdad
+            sb.append("prueba con $pn${if (ps) " (shiny)" else ""} (nivel ${levelForPokemon(context, pn, ps)}, xp $xpBefore)").append(nl)
+
+            // 1) meter
+            val add1 = nurseryAdd(context, pn, ps)
+            sb.append("meter: ${add1 ?: "OK"} -> dentro=${isInNursery(context, pn, ps)} ${if (add1 == null && isInNursery(context, pn, ps)) "OK" else "FALLO"}").append(nl)
+            // 2) bloqueos
+            val dup = nurseryBlockReason(context, pn, ps)
+            sb.append("meter otra vez: \"$dup\" ${if (dup == "Ya está en la guardería") "OK" else "FALLO"}").append(nl)
+            val act = nurseryBlockReason(context, activeName, activeShiny)
+            sb.append("meter al activo: \"$act\" ${if (act != null && act.contains("activo")) "OK" else "FALLO"}").append(nl)
+            if (nurseryMembers(context).size >= nurseryCapacity(context)) {
+                val other = ownedIndividuals(context).firstOrNull { (n, s) -> !(n == pn && s == ps) && !(n == activeName && s == activeShiny) && !isInNursery(context, n, s) }
+                if (other != null) {
+                    val full = nurseryBlockReason(context, other.first, other.second)
+                    sb.append("meter con plazas llenas: \"$full\" ${if (full == "No quedan plazas libres") "OK" else "FALLO"}").append(nl)
+                }
+            } else sb.append("(hay mas plazas libres: no se prueba el limite)").append(nl)
+            // 3) cobro de XP por tiempo
+            if (realMembers.isEmpty() && add1 == null) {
+                debugSetIndividualStats(context, pn, ps, health = 100f, hygiene = 100f, happiness = 100f)
+                val t3 = System.currentTimeMillis() - 3 * 3_600_000L
+                p.edit().putLong(KEY_NURSERY_XP_LAST, t3).putLong(KEY_NURSERY_EGG_LAST, t3).putLong(KEY_NURSERY_CARE_LAST, t3).commit()
+                val before = rawStats(context, pn, ps)?.xp ?: 0f
+                val rep = settleNursery(context, force = true)
+                val after = rawStats(context, pn, ps)?.xp ?: 0f
+                // XP por tiempo + el de las acciones que haya cubierto el (con 3 h de decaimiento puede cruzar algun umbral).
+                val expected = nurseryXpPerHour() * 3f + (rep?.careXp ?: 0f)
+                val ok = rep != null && Math.abs(after - before - expected) < 1f && rep.hatched == 0
+                sb.append("3 h de guarderia: xp $before -> $after (esperado +$expected = ${nurseryXpPerHour() * 3f} por tiempo + ${rep?.careXp} de ${rep?.careEvents?.size} necesidades cubiertas, huevos ${rep?.hatched}) ${if (ok) "OK" else "FALLO"}").append(nl)
+            } else sb.append("(la guarderia ya tenia Pokemon de verdad: no se prueba el reloj)").append(nl)
+            // 3b) un huevo que eclosiona en el primer tick: bono de XP (50 %), caramelo y aviso "siempre".
+            //     Si en ese 2 % sale un shiny, es real y se queda (se dice abajo).
+            var notifyAlwaysBefore: Boolean? = null
+            if (realMembers.isEmpty() && add1 == null) {
+                notifyAlwaysBefore = nurseryNotifyAlways(context)
+                setNurseryNotifyAlways(context, true)
+                // Con el huevo en el ultimo estado cada tick eclosiona SOLO con probabilidad ADVANCE_PROB (50 %):
+                // se repite hasta que eclosione (maximo 20 intentos, casi imposible fallar) para que la prueba sea fija.
+                var xb = 0f; var xa = 0f; var cb = 0; var ca = 0
+                var rep: NurseryReport? = null
+                for (attempt in 1..20) {
+                    debugSetIndividualStats(context, pn, ps, health = 100f, hygiene = 100f, happiness = 100f)
+                    val t = System.currentTimeMillis() - NurseryRules.TICK_MS - 1000L
+                    p.edit().putInt(KEY_NURSERY_EGG_STATE + pSlot, NurseryRules.EGG_SUCCESSES_TO_HATCH)
+                        .putLong(KEY_NURSERY_XP_LAST, t).putLong(KEY_NURSERY_EGG_LAST, t).putLong(KEY_NURSERY_CARE_LAST, t).commit()
+                    xb = rawStats(context, pn, ps)?.xp ?: 0f
+                    cb = candyCount(context)
+                    rep = settleNursery(context, force = true)
+                    xa = rawStats(context, pn, ps)?.xp ?: 0f
+                    ca = candyCount(context)
+                    if ((rep?.hatched ?: 0) >= 1) break
+                }
+                p.edit().putInt(KEY_NURSERY_EGG_STATE + pSlot, 0).commit()   // ni un huevo a medias para la prueba siguiente
+                val expectedXp = nurseryXpPerHour() * ((NurseryRules.TICK_MS + 1000L) / 3_600_000f) + EGG_HATCH_XP_BONUS * NurseryRules.HATCH_BONUS_FRACTION + (rep?.careXp ?: 0f)
+                val ok = rep != null && rep.hatched == 1 && Math.abs(xa - xb - expectedXp) < 1.5f && ca - cb == rep.candies
+                sb.append("huevo forzado: eclosionados=${rep?.hatched} caramelos +${ca - cb} (informe ${rep?.candies}) shiny=${rep?.shinies} repetidos=${rep?.duplicateShinies}; xp $xb -> $xa (esperado +$expectedXp) ${if (ok) "OK" else "FALLO"}").append(nl)
+                if (rep != null && rep.shinies.isNotEmpty()) sb.append("¡¡SALIO UN SHINY DE VERDAD (${rep.shinies.joinToString()}): se queda en tu Pokedex!!").append(nl)
+            }
+            // 3c) necesidades: con la vida muy baja el Pokemon come el solo (manzana), gana el XP de la accion y,
+            //     por el coste cruzado, se ensucia un poco.
+            if (realMembers.isEmpty() && add1 == null) {
+                debugSetIndividualStats(context, pn, ps, health = 10f, hygiene = 100f, happiness = 100f)
+                val t = System.currentTimeMillis() - 2 * NurseryRules.CARE_STEP_MS - 1000L
+                p.edit().putLong(KEY_NURSERY_XP_LAST, t).putLong(KEY_NURSERY_EGG_LAST, t).putLong(KEY_NURSERY_CARE_LAST, t).commit()
+                val xb = rawStats(context, pn, ps)?.xp ?: 0f
+                val rep = settleNursery(context, force = true)
+                val s = rawStats(context, pn, ps)
+                val fed = rep?.careEvents?.count { it.action == PokeWidgetProvider.ACTION_FEED && it.slotKey == pSlot } ?: 0
+                val expectedXp = nurseryXpPerHour() * ((2 * NurseryRules.CARE_STEP_MS + 1000L) / 3_600_000f) + (rep?.careXp ?: 0f)
+                val ok = rep != null && fed >= 1 && s != null && s.health > 40f && s.hygiene < 100f && (rep.careXp) >= 5f &&
+                    Math.abs((s.xp - xb) - expectedXp) < 1.5f
+                sb.append("necesidades: vida 10 -> ${s?.health} (comidas $fed, otras ${(rep?.careEvents?.size ?: 0) - fed}), higiene ${s?.hygiene}, XP de acciones +${rep?.careXp} ${if (ok) "OK" else "FALLO"}").append(nl)
+            }
+            // 3d) fondo a juego automatico: x2 de shiny si hay un fondo DESBLOQUEADO que le pegue (calculado aqui
+            //     por otro camino: tipos del Pokemon contra los tipos que beneficia cada fondo desbloqueado).
+            run {
+                val types = typesOf(context, pn, ps)
+                val expectedMult = if (unlockedBackgrounds(context).any { bg -> typesBenefitedBy(bg).any { it in types } }) 2f else 1f
+                val mult = nurseryShinyMultiplier(context, pn, ps)
+                sb.append("fondo a juego en la guarderia: tipos=$types multiplicador=$mult (esperado $expectedMult) ${if (mult == expectedMult) "OK" else "FALLO"}").append(nl)
+                // Caso x2: se desbloquea un instante UN fondo que le pegue (si aun no lo esta) y el multiplicador sube
+                // a 2 sin tocar el fondo puesto en el widget; despues se restaura la lista de fondos tal cual estaba.
+                val candidateBg = types.firstNotNullOfOrNull { t -> BG_FOR_TYPE[t]?.firstOrNull { !isBgUnlocked(context, it) } }
+                if (candidateBg != null) {
+                    val hadBgSet = p.contains(KEY_UNLOCKED_BGS)
+                    val bgSetBefore = p.getStringSet(KEY_UNLOCKED_BGS, null)?.toSet()
+                    val widgetBgBefore = currentBg(context)
+                    p.edit().putStringSet(KEY_UNLOCKED_BGS, unlockedBackgrounds(context) + candidateBg).commit()
+                    val boosted = nurseryShinyMultiplier(context, pn, ps)
+                    val widgetBgAfter = currentBg(context)
+                    if (hadBgSet) p.edit().putStringSet(KEY_UNLOCKED_BGS, bgSetBefore).commit() else p.edit().remove(KEY_UNLOCKED_BGS).commit()
+                    sb.append("con $candidateBg desbloqueado: multiplicador=$boosted, fondo del widget $widgetBgBefore -> $widgetBgAfter ${if (boosted == 2f && widgetBgBefore == widgetBgAfter) "OK" else "FALLO"}; restaurado=${nurseryShinyMultiplier(context, pn, ps) == mult}").append(nl)
+                }
+            }
+            // 4) sacar
+            nurseryRemove(context, pn, ps)
+            sb.append("sacar: dentro=${isInNursery(context, pn, ps)} ${if (!isInNursery(context, pn, ps)) "OK" else "FALLO"}").append(nl)
+
+            // --- restaurar
+            statsBefore?.let { debugSetIndividualStats(context, pn, ps, health = it.health, hygiene = it.hygiene, happiness = it.happiness, xp = xpBefore) }
+            val e = p.edit().putFloat(xpKey, xpBefore)
+            if (lastBefore != 0L) e.putLong(lastKey, lastBefore) else e.remove(lastKey)
+            if (hadEggFlag) e.putBoolean(eggKey, eggFlagBefore) else e.remove(eggKey)
+            e.remove(KEY_NURSERY_EGG_STATE + pSlot)
+            e.commit()
+            notifyAlwaysBefore?.let { setNurseryNotifyAlways(context, it) }
+        }
+        val e = p.edit()
+        if (hadSet) e.putStringSet(KEY_NURSERY_SET, setBefore) else e.remove(KEY_NURSERY_SET)
+        e.putLong(KEY_NURSERY_XP_LAST, xpLastBefore).putLong(KEY_NURSERY_EGG_LAST, eggLastBefore).putLong(KEY_NURSERY_CARE_LAST, careLastBefore)
+        if (hadTrainerMax) e.putInt(KEY_TRAINER_LEVEL_MAX, trainerMaxBefore) else e.remove(KEY_TRAINER_LEVEL_MAX)
+        e.putInt(KEY_CANDY_COUNT, candiesBefore)
+        e.commit()
+        sb.append("restaurado: dentro=${nurseryMembers(context).size} (antes ${realMembers.size}), caramelos=${candyCount(context)} (antes $candiesBefore), nivel maximo=${trainerLevelMax(context)} (antes $trainerMaxBefore)")
+        return sb.toString()
+    }
+
+    // ==================== GUARDERIA ====================
+    // Se desbloquea con el nivel de entrenador (UNLOCK_NURSERY_LEVEL, plazas segun NurseryRules). Un
+    // Pokemon dentro anda suelto por el prado (ver NurseryView) y gana el 50 % del XP por tiempo del
+    // activo SIN cuidarlo; ademas tiene LAS MISMAS NECESIDADES que cuando lo cuidas (vida, felicidad e
+    // higiene decaen igual) y las cubre el solo - manzanas, pelota y bebedero - ganando el XP de una
+    // accion cada vez (ver simulateNurseryCare). Si puede poner huevos, los pone e incuba SOLO: el
+    // shiny se queda (y avisa), el resto se convierte en caramelo; el que puso el huevo cobra el 50 %
+    // del bono de eclosion de siempre.
+    // Todo se LIQUIDA de forma perezosa (settleNursery) al abrir la app y en el tick de 15 min del
+    // widget: ni hilos ni alarmas propias. Un Pokemon de la guarderia no puede ser el activo ni
+    // explorar la mazmorra a la vez (nurseryBlockReason); al evolucionar o pasar a activo, sale.
+    private const val KEY_NURSERY_SET = "nursery_set"                // StringSet de slots ("pikachu", "pikachu#shiny")
+    private const val KEY_NURSERY_XP_LAST = "nursery_xp_last"
+    private const val KEY_NURSERY_EGG_LAST = "nursery_egg_last"
+    private const val KEY_NURSERY_CARE_LAST = "nursery_care_last"   // reloj de las necesidades (pasos de NurseryRules.CARE_STEP_MS)
+    private const val KEY_NURSERY_EGG_STATE = "nursery_egg_state."   // + slot -> estado del huevo (ver NurseryRules)
+    private const val KEY_NURSERY_NOTIFY_ALWAYS = "nursery_notify_always"
+    private const val KEY_NURSERY_EVO_NOTIFIED = "nursery_evo_notified"   // StringSet de slots que ya pueden evolucionar y de los que ya se aviso
+    private const val NURSERY_MIN_SETTLE_MS = 60_000L
+    private const val NURSERY_DUPLICATE_SHINY_CANDIES = 3
+
+    fun nurseryUnlocked(context: Context): Boolean = trainerLevelMaxFresh(context) >= UNLOCK_NURSERY_LEVEL
+    fun nurseryCapacity(context: Context): Int = NurseryRules.slotsForTrainerLevel(trainerLevelMaxFresh(context))
+    fun nurseryNextSlotLevel(context: Context): Int? = NurseryRules.nextSlotLevel(trainerLevelMax(context))
+    /** XP por hora de cada plaza (la mitad del XP por tiempo del activo, sin multiplicador de fondo). */
+    fun nurseryXpPerHour(): Float = NurseryRules.xpPerHour(TIME_XP_PER_H)
+
+    private fun nurserySlotKeys(context: Context): List<String> =
+        (prefs(context).getStringSet(KEY_NURSERY_SET, null) ?: emptySet()).sorted()
+
+    private fun parseSlotKey(key: String): Pair<String, Boolean> =
+        if (key.endsWith(SHINY_SLOT_SUFFIX)) key.removeSuffix(SHINY_SLOT_SUFFIX) to true else key to false
+
+    /** Los Pokemon (especie, shiny) que estan en la guarderia ahora mismo. */
+    fun nurseryMembers(context: Context): List<Pair<String, Boolean>> = nurserySlotKeys(context).map { parseSlotKey(it) }
+
+    fun isInNursery(context: Context, name: String, shiny: Boolean): Boolean =
+        slot(name.lowercase(), shiny) in nurserySlotKeys(context)
+
+    /** Las evoluciones que [name]/[shiny] puede hacer YA (nivel alcanzado en alguna rama), o null si ninguna.
+     *  Nunca lanza: la guarderia se liquida sola en segundo plano y un valor raro de las preferencias no debe tumbarla. */
+    fun evolutionReadyFor(context: Context, name: String, shiny: Boolean): EvoEntry? = try {
+        rawStats(context, name, shiny)?.let { pendingEvolutionFor(context, name, it, shiny) }
+    } catch (_: Throwable) { null }
+
+    /** Los Pokemon de la guarderia que pueden evolucionar ahora mismo (para marcarlos en la escena). No avisa ni marca nada. */
+    fun nurseryEvolvable(context: Context): List<Pair<String, Boolean>> =
+        nurseryMembers(context).filter { (n, s) -> evolutionReadyFor(context, n, s) != null }
+
+    // Visitantes del jardin (ver NurseryVisitors): Pokemon que no son del jugador, con nivel parecido a los de dentro.
+    @Volatile private var visitorCatalog: NurseryVisitors.Catalog? = null
+
+    private fun nurseryVisitorCatalog(context: Context): NurseryVisitors.Catalog {
+        visitorCatalog?.let { return it }
+        // Fuerza de cada especie (suma de sus 5 estadisticas base) solo para situar las que no tienen evolucion (Tauros...).
+        val strength = HashMap<String, Int>()
+        try {
+            val obj = org.json.JSONObject(context.assets.open("base_stats.json").bufferedReader().use { it.readText() })
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val name = keys.next(); val s = obj.getJSONObject(name)
+                strength[name] = s.optInt("hp") + s.optInt("attack") + s.optInt("defense") + s.optInt("special_attack") + s.optInt("speed")
+            }
+        } catch (_: Throwable) { /* sin datos: todas cuentan como medias */ }
+        val table = loadEvoTable(context).mapValues { (n, e) ->
+            NurseryVisitors.Sp(n, e.evolvesFrom, e.evolvesTo.map { it.name to it.level }, e.rare, strength[n] ?: 300)
+        }
+        return NurseryVisitors.catalog(table).also { visitorCatalog = it }
+    }
+
+    /** Los visitantes que andan por la guarderia ahora ([nowMs]): hasta 3 Pokemon que NO son del jugador, de nivel parecido a
+     *  los que tiene dentro (o, con la guarderia vacia, al de su activo), que cambian cada 15 minutos. [accept] descarta
+     *  especies que no se puedan dibujar. Nunca lanza: un valor raro de las preferencias solo deja la escena sin visitantes. */
+    fun nurseryVisitors(context: Context, nowMs: Long = System.currentTimeMillis(), accept: (String) -> Boolean = { true }): List<NurseryVisitors.Visitor> = try {
+        val members = nurseryMembers(context)
+        val levels = members.mapNotNull { (n, s) -> levelForPokemon(context, n, s) }.ifEmpty {
+            listOfNotNull(levelForPokemon(context, currentPokemon(context), isActiveShiny(context)))
+        }
+        NurseryVisitors.pick(
+            nurseryVisitorCatalog(context), levels, members.map { it.first.lowercase() }.toSet(),
+            NurseryVisitors.slotOf(nowMs), NurseryVisitors.countFor(members.size), accept
+        )
+    } catch (_: Throwable) { emptyList() }
+
+    private fun nurseryEvoNotified(context: Context): Set<String> =
+        prefs(context).getStringSet(KEY_NURSERY_EVO_NOTIFIED, null) ?: emptySet()
+
+    /** Anota (o quita) a [key] de los "ya avisados de que puede evolucionar". */
+    private fun markNurseryEvoNotified(context: Context, key: String, notified: Boolean) {
+        val now = nurseryEvoNotified(context)
+        if ((key in now) == notified) return
+        prefs(context).edit().putStringSet(KEY_NURSERY_EVO_NOTIFIED, if (notified) now + key else now - key).apply()
+    }
+
+    // Posicion de los muebles del jardin (bebedero y cesta; la pelota no se guarda), arrastrables desde la
+    // escena (NurseryView): se guarda el punto de apoyo en el suelo como fraccion (x, y) del ancho/alto de la vista.
+    private const val KEY_NURSERY_FURNITURE = "nursery_furniture."   // + "trough" / "basket" -> "fx,fy"
+
+    fun nurseryFurniturePos(context: Context, kind: String): Pair<Float, Float>? {
+        val parts = prefs(context).getString(KEY_NURSERY_FURNITURE + kind, null)?.split(",") ?: return null
+        if (parts.size != 2) return null
+        return (parts[0].toFloatOrNull() ?: return null) to (parts[1].toFloatOrNull() ?: return null)
+    }
+
+    fun setNurseryFurniturePos(context: Context, kind: String, fx: Float, fy: Float) =
+        prefs(context).edit().putString(KEY_NURSERY_FURNITURE + kind, "$fx,$fy").apply()
+
+    /** Vuelve a la posicion por defecto de [kind] (solo lo usan las pruebas, para dejar la disposicion como estaba). */
+    fun clearNurseryFurniturePos(context: Context, kind: String) =
+        prefs(context).edit().remove(KEY_NURSERY_FURNITURE + kind).apply()
+
+    /** Aviso de huevos: true = de todos los huevos (un resumen por tanda), false = solo de los shiny. */
+    fun nurseryNotifyAlways(context: Context): Boolean = prefs(context).getBoolean(KEY_NURSERY_NOTIFY_ALWAYS, false)
+    fun setNurseryNotifyAlways(context: Context, always: Boolean) =
+        prefs(context).edit().putBoolean(KEY_NURSERY_NOTIFY_ALWAYS, always).apply()
+
+    /** Por que NO se puede meter [name]/[shiny] en la guarderia ahora mismo (null = se puede). */
+    fun nurseryBlockReason(context: Context, name: String, shiny: Boolean): String? {
+        val base = name.lowercase()
+        if (!nurseryUnlocked(context)) return "La guardería se desbloquea en el nivel de entrenador $UNLOCK_NURSERY_LEVEL"
+        if (!hasIndividual(context, base, shiny) || hasEvolvedAway(context, base, shiny)) return "Ese Pokémon no está disponible"
+        if (isInNursery(context, base, shiny)) return "Ya está en la guardería"
+        if (nurseryMembers(context).size >= nurseryCapacity(context)) return "No quedan plazas libres"
+        if (currentPokemon(context) == base && isActiveShiny(context) == shiny) {
+            return "Es tu Pokémon activo: la guardería es para los demás"
+        }
+        if (DungeonState.isInParty(context, base, shiny)) return "Está en la mazmorra"
+        return null
+    }
+
+    /** Mete a [name]/[shiny] en la guarderia. Devuelve el motivo si no se pudo, o null si OK. */
+    fun nurseryAdd(context: Context, name: String, shiny: Boolean): String? = synchronized(statsWriteLock) {
+        nurseryBlockReason(context, name, shiny)?.let { return@synchronized it }
+        settleNursery(context, force = true)   // los que ya estaban cobran hasta ahora; el nuevo empieza limpio
+        val key = slot(name.lowercase(), shiny)
+        val now = System.currentTimeMillis()
+        prefs(context).edit()
+            .putStringSet(KEY_NURSERY_SET, nurserySlotKeys(context).toSet() + key)
+            .putInt(KEY_NURSERY_EGG_STATE + key, 0)
+            .putLong(KEY_NURSERY_XP_LAST, now)
+            .putLong(KEY_NURSERY_EGG_LAST, if (nurserySlotKeys(context).isEmpty()) now else prefs(context).getLong(KEY_NURSERY_EGG_LAST, now))
+            .putLong(KEY_NURSERY_CARE_LAST, if (nurserySlotKeys(context).isEmpty()) now else prefs(context).getLong(KEY_NURSERY_CARE_LAST, now))
+            .commit()
+        // Si ya puede evolucionar al entrar, el jugador lo sabe (acaba de elegirlo): no hace falta avisarle luego.
+        if (evolutionReadyFor(context, name, shiny) != null) markNurseryEvoNotified(context, key, true)
+        DebugLog.log(context, "guarderia: entra ${name.lowercase()}${if (shiny) " (shiny)" else ""} (plazas ${nurserySlotKeys(context).size}/${nurseryCapacity(context)})")
+        null
+    }
+
+    /** Saca a [name]/[shiny] de la guarderia (cobra antes lo que llevara). Si tenia un huevo a medias, se pierde. */
+    fun nurseryRemove(context: Context, name: String, shiny: Boolean) = synchronized(statsWriteLock) {
+        val key = slot(name.lowercase(), shiny)
+        if (key !in nurserySlotKeys(context)) return@synchronized
+        // Lo que sale (a evolucionar, a ser el activo...) no debe disparar el aviso de "puede evolucionar" en su ultima liquidacion.
+        markNurseryEvoNotified(context, key, true)
+        settleNursery(context, force = true)
+        // Su reloj pasa a AHORA: si despues se cuida como activo, el tiempo que estuvo en la guarderia
+        // no debe volver a contar como XP pasiva del activo (loadWithDecay mide desde "last").
+        prefs(context).edit()
+            .putStringSet(KEY_NURSERY_SET, nurserySlotKeys(context).toSet() - key)
+            .remove(KEY_NURSERY_EGG_STATE + key)
+            .putLong(k(key, KEY_LAST), System.currentTimeMillis())
+            .commit()
+        markNurseryEvoNotified(context, key, false)
+        if (nurseryEvoNotified(context).isEmpty()) NotificationHelper.cancelNurseryEvolution(context)
+        DebugLog.log(context, "guarderia: sale ${name.lowercase()}${if (shiny) " (shiny)" else ""}")
+    }
+
+    /** Una necesidad que un Pokemon de la guarderia ha cubierto el solo: [action] es PokeWidgetProvider.ACTION_FEED
+     *  (comer una manzana -> vida), ACTION_PET (jugar con la pelota -> felicidad) o ACTION_WASH (beber/refrescarse
+     *  en el bebedero -> higiene). [slotKey] identifica al Pokemon (como en nursery_set). */
+    class NurseryCareEvent(val slotKey: String, val action: String) {
+        val species: String get() = slotKey.removeSuffix(SHINY_SLOT_SUFFIX)
+        val shiny: Boolean get() = slotKey.endsWith(SHINY_SLOT_SUFFIX)
+    }
+
+    class NurseryReport(
+        val hatched: Int, val candies: Int, val shinies: List<String>, val duplicateShinies: Int,
+        val timeXpPerSlot: Float, val bonusXp: Float,
+        val careEvents: List<NurseryCareEvent> = emptyList(), val careXp: Float = 0f,
+        /** Especies de la guarderia que acaban de poder evolucionar en esta liquidacion (solo las NUEVAS, no las ya avisadas). */
+        val evolvable: List<String> = emptyList()
+    )
+
+    /** Avanza [steps] pasos de [NurseryRules.CARE_STEP_MS] (desde [fromMs]) las necesidades de los miembros
+     *  [keys] con LAS MISMAS reglas que el compañero activo (loadWithDecay + tryApplyAction): decaimiento
+     *  dia/noche con su personalidad, umbral aleatorio por stat (que se vuelve a sortear al cubrirla),
+     *  boost fijo y coste cruzado. Cuando una stat cae bajo su umbral el Pokemon la cubre (la mas hundida
+     *  primero) y gana ACTION_XP; las stats resultantes se guardan. Devuelve el XP de acciones de cada
+     *  miembro (mismo orden que [keys]) y añade los sucesos a [events]. */
+    private fun simulateNurseryCare(context: Context, keys: List<String>, fromMs: Long, steps: Int, events: MutableList<NurseryCareEvent>): FloatArray {
+        val p = prefs(context)
+        val bedH = bedtimeHour(context); val wakeH = wakeHour(context)
+        val xp = FloatArray(keys.size)
+        if (steps <= 0) return xp
+        val stepMs = NurseryRules.CARE_STEP_MS
+        val actions = arrayOf(PokeWidgetProvider.ACTION_FEED, PokeWidgetProvider.ACTION_PET, PokeWidgetProvider.ACTION_WASH)
+        val threshKeys = arrayOf(KEY_THRESH_HEALTH, KEY_THRESH_HAPPY, KEY_THRESH_HYGIENE)
+        keys.forEachIndexed { i, key ->
+            val (species, shiny) = parseSlotKey(key)
+            val s = rawStats(context, species, shiny) ?: return@forEachIndexed
+            val (mHealth, mHappy, mHygiene) = personalityMultipliers(context, species)
+            for (step in 0 until steps) {
+                val t0 = fromMs + step * stepMs; val t1 = t0 + stepMs
+                s.health = (s.health - decayOver(t0, t1, HEALTH_DAY * mHealth, HEALTH_NIGHT * mHealth, bedH, wakeH)).coerceIn(0f, 100f)
+                s.hygiene = (s.hygiene - decayOver(t0, t1, HYGIENE_DAY * mHygiene, HYGIENE_NIGHT * mHygiene, bedH, wakeH)).coerceIn(0f, 100f)
+                s.happiness = (s.happiness - decayOver(t0, t1, HAPPY_DAY * mHappy, HAPPY_NIGHT * mHappy, bedH, wakeH)).coerceIn(0f, 100f)
+                // Orden: vida, felicidad, higiene (el de `actions`); la mas hundida bajo su umbral va primero.
+                val thresholds = FloatArray(3) { ensureThreshold(context, species, threshKeys[it]) }
+                val order = NurseryRules.needsInOrder(floatArrayOf(s.health, s.happiness, s.hygiene), thresholds)
+                for (idx in order) {
+                    // Un coste cruzado de una accion anterior pudo subirla o bajarla: se vuelve a comprobar.
+                    val value = when (idx) { 0 -> s.health; 1 -> s.happiness; else -> s.hygiene }
+                    if (value >= ensureThreshold(context, species, threshKeys[idx])) continue
+                    when (idx) {
+                        0 -> s.health = (s.health + BOOST_HEALTH).coerceIn(0f, 100f)
+                        1 -> s.happiness = (s.happiness + BOOST_HAPPY).coerceIn(0f, 100f)
+                        else -> s.hygiene = (s.hygiene + BOOST_HYGIENE).coerceIn(0f, 100f)
+                    }
+                    sideEffectFor(actions[idx], mHealth, mHappy, mHygiene)?.invoke(s)
+                    xp[i] += ACTION_XP
+                    events.add(NurseryCareEvent(key, actions[idx]))
+                    rerollThreshold(context, species, threshKeys[idx])
+                }
+            }
+            p.edit().putFloat(k(key, KEY_HEALTH), s.health).putFloat(k(key, KEY_HYGIENE), s.hygiene)
+                .putFloat(k(key, KEY_HAPPINESS), s.happiness).commit()
+        }
+        return xp
+    }
+
+    /** Liquida la guarderia hasta AHORA: XP de cada plaza, huevos puestos/eclosionados y su resultado
+     *  (shiny -> individuo nuevo, resto -> caramelos), avisando segun el ajuste. [force] salta el
+     *  minimo de 1 min entre liquidaciones. Devuelve el resumen, o null si no habia nada que hacer. */
+    fun settleNursery(context: Context, force: Boolean = false): NurseryReport? = synchronized(statsWriteLock) {
+        val p = prefs(context)
+        val keys = nurserySlotKeys(context)
+        val now = System.currentTimeMillis()
+        if (keys.isEmpty()) {
+            p.edit().putLong(KEY_NURSERY_XP_LAST, now).putLong(KEY_NURSERY_EGG_LAST, now).putLong(KEY_NURSERY_CARE_LAST, now).apply()
+            return@synchronized null
+        }
+        val xpLast = p.getLong(KEY_NURSERY_XP_LAST, 0L)
+        // Ancla sin inicializar, corrupta (1970) o en el futuro (hora del movil adelantada y luego
+        // corregida): no es una ausencia, se re-ancla a ahora (QaRobust/guarderia: 1970 regalaba
+        // ~9,96 M XP). Una ausencia real larga se acredita hasta el tope de un ano.
+        if (xpLast < MIN_VALID_EPOCH_MS || xpLast > now) {
+            p.edit().putLong(KEY_NURSERY_XP_LAST, now).putLong(KEY_NURSERY_EGG_LAST, now).putLong(KEY_NURSERY_CARE_LAST, now).apply()
+            return@synchronized null
+        }
+        if (!force && now - xpLast < NURSERY_MIN_SETTLE_MS) return@synchronized null
+
+        val hours = (now - xpLast).coerceIn(0L, MAX_ABSENCE_MS) / 3_600_000f
+        val xpEach = NurseryRules.xpPerHour(TIME_XP_PER_H) * hours
+        val eggLast = sanitizeClock(p.getLong(KEY_NURSERY_EGG_LAST, now), now)
+        val plan = NurseryRules.planTicks(now - eggLast)
+        val states = IntArray(keys.size) { p.getInt(KEY_NURSERY_EGG_STATE + keys[it], 0) }
+        val probs = FloatArray(keys.size) { i ->
+            val (n, sh) = parseSlotKey(keys[i])
+            if (isFinalStage(context, n) && eggLayingEnabled(context, n)) {
+                NurseryRules.layProbability(levelForPokemon(context, n, sh) ?: 1, EGG_LAY_BASE_PROB, EGG_LAY_LEVEL_SCALE, EGG_LAY_PROB_MAX)
+            } else 0f
+        }
+        val eggs = NurseryRules.simulateEggs(plan.ticks, states, probs, Random)
+        // Necesidades (comer/jugar/beber): mismos pasos y reglas que el compañero activo, ver simulateNurseryCare.
+        val careLast = sanitizeClock(p.getLong(KEY_NURSERY_CARE_LAST, now), now)
+        val carePlan = NurseryRules.planCareSteps(careLast, now)
+        val careEvents = ArrayList<NurseryCareEvent>()
+        val careXp = simulateNurseryCare(context, keys, carePlan.fromMs, carePlan.steps, careEvents)
+        val edit = p.edit()
+        keys.forEachIndexed { i, key -> edit.putInt(KEY_NURSERY_EGG_STATE + key, eggs.finalStates[i]) }
+        edit.putLong(KEY_NURSERY_XP_LAST, now).putLong(KEY_NURSERY_EGG_LAST, eggLast + plan.advanceMs)
+            .putLong(KEY_NURSERY_CARE_LAST, carePlan.newLastMs).commit()
+
+        var hatched = 0; var candies = 0; var duplicates = 0; var bonusTotal = 0f
+        val shinies = ArrayList<String>()
+        val gone = ArrayList<String>()
+        keys.forEachIndexed { i, key ->
+            val (parent, parentShiny) = parseSlotKey(key)
+            if (!hasIndividual(context, parent, parentShiny) || hasEvolvedAway(context, parent, parentShiny)) {
+                gone.add(key); return@forEachIndexed   // desaparecio (borrado/evoluciono por otro camino): se saca
+            }
+            val h = eggs.hatches[i]
+            val bonus = h * EGG_HATCH_XP_BONUS * NurseryRules.HATCH_BONUS_FRACTION
+            bonusTotal += bonus
+            val gain = xpEach + bonus + careXp[i]
+            if (gain > 0f) grantXpToIndividual(context, parent, parentShiny, gain)
+            repeat(h) {
+                hatched++
+                val base = baseFormOf(context, parent)
+                val species = REGIONAL_HATCH_VARIANT[base]?.let { v -> if (Random.nextFloat() < 0.5f) v else base } ?: base
+                if (rollNurseryShiny(context, parent, parentShiny)) {
+                    val id = evolutionInfo(context, species)?.id
+                    val alreadyHad = p.contains(k(slot(species, true), KEY_XP))
+                    if (!alreadyHad && id != null) { rollFreshIndividual(context, species, true, id); shinies.add(species) }
+                    else { candies += NURSERY_DUPLICATE_SHINY_CANDIES; duplicates++ }
+                } else candies++
+            }
+        }
+        if (gone.isNotEmpty()) {
+            p.edit().putStringSet(KEY_NURSERY_SET, nurserySlotKeys(context).toSet() - gone.toSet()).commit()
+        }
+        if (candies > 0) addCandies(context, candies)
+        // Evolucion: con la XP ya repartida, los que alcanzan el nivel de alguna rama avisan UNA vez (hasta que evolucionen
+        // o salgan); si ninguno puede ya, se retira el aviso que quedara en la barra.
+        val readyNow = keys.filter { it !in gone }.filter { key -> val (n, sh) = parseSlotKey(key); evolutionReadyFor(context, n, sh) != null }.toSet()
+        val alreadyTold = nurseryEvoNotified(context)
+        val freshlyReady = (readyNow - alreadyTold).sorted()
+        if (readyNow != alreadyTold) p.edit().putStringSet(KEY_NURSERY_EVO_NOTIFIED, HashSet(readyNow)).apply()
+        if (readyNow.isEmpty() && alreadyTold.isNotEmpty()) NotificationHelper.cancelNurseryEvolution(context)
+        val report = NurseryReport(hatched, candies, shinies, duplicates, xpEach, bonusTotal, careEvents, careXp.sum(), freshlyReady.map { parseSlotKey(it).first })
+        if (careEvents.isNotEmpty()) {
+            DebugLog.log(context, "guarderia: necesidades cubiertas ${careEvents.groupingBy { it.action }.eachCount()} (+${careXp.sum().toInt()} XP)")
+        }
+        if (hatched > 0) {
+            DebugLog.log(context, "guarderia: $hatched huevo(s) abiertos -> $candies caramelo(s), shiny=${shinies.joinToString(",")}, shiny repetidos=$duplicates")
+        }
+        if (freshlyReady.isNotEmpty()) DebugLog.log(context, "guarderia: pueden evolucionar ${freshlyReady.joinToString(", ")}")
+        if (hatched > 0 || freshlyReady.isNotEmpty()) NotificationHelper.deliverNurseryReport(context, report)
+        report
+    }
+
+    /** Suelta el huevo (ver [releaseEgg]) y, si la mochila ya esta desbloqueada, da un caramelo a
+     *  cambio. Devuelve true si se dio el caramelo. */
+    fun releaseEggForCandy(context: Context): Boolean {
+        releaseEgg(context)
+        if (!candiesUnlocked(context)) return false
+        addCandies(context, 1)
+        return true
     }
 
     /** Crea el individuo [shiny] de [name] con datos iniciales (nivel 1, barras 50-100 al azar
@@ -1202,6 +2008,10 @@ object PetState {
         val base = name.lowercase()
         val n = slot(base, shiny)
         val p = prefs(context)
+        // Si estaba en la guarderia o en el grupo de una mazmorra, sale de ahi (antes quedaba un miembro fantasma hasta la
+        // siguiente liquidacion / un explorador que ya no existe).
+        DungeonState.dropMember(context, base, shiny)
+        if (isInNursery(context, base, shiny)) nurseryRemove(context, base, shiny)
         var newActive: Pair<String, Boolean>? = null
         if (currentPokemon(context) == base && isActiveShiny(context) == shiny) {
             val unlocked = p.getStringSet(KEY_UNLOCKED, emptySet()) ?: emptySet()
@@ -1359,16 +2169,69 @@ object PetState {
      * Evoluciona el individuo [shiny] (normal o shiny, NO necesariamente el activo del widget) de
      * [fromName] hacia [toName]: migra su estado (stats/xp/reloj/ritmos) de las claves de la
      * especie vieja a las de la nueva (el nivel/xp/cariño NO se pierden, solo cambia la especie),
-     * lo desbloquea en la Pokedex, lo deja como Pokemon ACTIVO del widget, y marca la especie
+     * lo desbloquea en la Pokedex, lo deja como Pokemon ACTIVO del widget (salvo si estaba en la
+     * GUARDERIA: ahi se queda, ya evolucionado, y el activo no cambia), y marca la especie
      * vieja como "evolucionada" (queda registrada en la Pokedex - se tuvo - pero ya no se puede
      * volver a seleccionar: el individuo que era ya es otra especie). NO descarga el sprite ni
      * refresca el widget - eso lo hace quien llama (necesita red/hilo de fondo). [toName] ya debe
      * venir resuelto (ver resolveEvolutionTarget) - esta funcion migra tal cual, sin sortear nada.
      */
-    fun evolveTo(context: Context, fromName: String, toName: String, toId: Int, shiny: Boolean) {
+    /** ¿[fromName] evolucionara SIN pasar a ser el Pokemon activo del widget? Si esta en la guarderia o
+     *  en el grupo de una mazmorra (o sustituye a alguien que va en ese grupo) se queda donde esta, ya
+     *  evolucionado. Misma regla que evolveToLocked - para que la interfaz sepa si [selected] cambia. */
+    fun evolvesInPlace(context: Context, fromName: String, toName: String, shiny: Boolean): Boolean {
+        val f = fromName.lowercase(); val t = toName.lowercase()
+        val fromIsActive = currentPokemon(context) == f && isActiveShiny(context) == shiny
+        return isInNursery(context, f, shiny) || DungeonState.isInParty(context, f, shiny) ||
+            (DungeonState.isInParty(context, t, shiny) && !fromIsActive)
+    }
+
+    fun evolveTo(context: Context, fromName: String, toName: String, toId: Int, shiny: Boolean) =
+        // Todo bajo el candado de las estadisticas: la guarderia se liquida en el tick del widget (otro hilo) y no puede ver al
+        // Pokemon "evolucionado" a medias (ya sin la especie vieja y aun sin la nueva en la guarderia).
+        synchronized(statsWriteLock) { evolveToLocked(context, fromName, toName, toId, shiny) }
+
+    /** XP con la que el individuo llega a la especie nueva. Si las dos suben de nivel al mismo ritmo (casi siempre) es la misma XP. Si no (la linea
+     *  de Applin mezcla ritmos: Applin y Hydrapple "erratico", Dipplin "lento"), la misma XP daria OTRO nivel - Applin Nv27 pasaba a Dipplin Nv18 y
+     *  Dipplin Nv28 a Hydrapple Nv40 -, asi que se conserva el NIVEL y lo que lleva avanzado dentro de el, como en los juegos. */
+    private fun xpForNewSpecies(context: Context, from: String, to: String, xp: Float): Float {
+        if (growthRateOf(context, from) == growthRateOf(context, to)) return xp
+        val level = levelOf(context, xp, from)
+        if (level >= MAX_LEVEL) return cumXp(MAX_LEVEL, context, to)
+        val progress = progressOf(context, xp, from)
+        val a = cumXp(level, context, to); val b = cumXp(level + 1, context, to)
+        val converted = a + progress * (b - a)
+        DebugLog.log(context, "evolucion: $from -> $to cambia de ritmo de crecimiento (${growthRateOf(context, from)} -> ${growthRateOf(context, to)}): se conserva el nivel $level (XP ${xp.toInt()} -> ${converted.toInt()})")
+        return converted
+    }
+
+    private fun evolveToLocked(context: Context, fromName: String, toName: String, toId: Int, shiny: Boolean) {
         val from = fromName.lowercase()
         val to = toName.lowercase()
         if (from == to) return
+        // Si estaba en la GUARDERIA se queda ahi, ya evolucionado (pedido del usuario: "si evoluciona en la guarderia aparece
+        // evolucionado"), y NO pasa a ser el Pokemon activo. Antes se liquida la guarderia: la XP que llevara hasta ahora se cobra
+        // con el nombre viejo, y es la que se migra.
+        // Lo mismo si es del grupo de la MAZMORRA (lider o compañero, o si quien sustituye va en ese grupo): sigue ahi con la
+        // especie nueva y NO pasa a ser el activo - un explorador no puede ser el activo (QaConflicts: antes quedaban la forma vieja
+        // explorando como fantasma y la nueva activa a la vez).
+        val fromInParty = DungeonState.isInParty(context, from, shiny)
+        var toInParty = DungeonState.isInParty(context, to, shiny)
+        // El activo del widget que evoluciona a una especie que ahora explora sustituye a ese explorador (solo puede haber uno): como el
+        // activo no puede explorar, ese individuo sale del grupo (si era el lider, la carrera se abandona).
+        if (toInParty && !fromInParty && currentPokemon(context) == from && isActiveShiny(context) == shiny) {
+            DungeonState.dropMember(context, to, shiny)
+            toInParty = false
+        }
+        // Uno de la guarderia que sustituye a alguien del grupo de la mazmorra toma ese sitio: sale de la guarderia (no puede estar en las dos).
+        if (toInParty && isInNursery(context, from, shiny)) nurseryRemove(context, from, shiny)
+        val stayInNursery = isInNursery(context, from, shiny)
+        val stayInDungeon = !stayInNursery && (fromInParty || toInParty)
+        if (stayInNursery) settleNursery(context, force = true)
+        // Si ya tenias la especie de destino, el que evoluciona SUSTITUYE a ese individuo (comportamiento acordado: no puede haber dos). Si ese
+        // estaba en la guarderia y el que evoluciona va a ser el activo (no estaba en la guarderia), tiene que salir de ella: un Pokemon de la
+        // guarderia no puede ser el activo (y si no, quedaria en las dos cosas a la vez).
+        if (!stayInNursery && isInNursery(context, to, shiny)) nurseryRemove(context, to, shiny)
         val p = prefs(context)
         // [shiny] es del INDIVIDUO que evoluciona de verdad (normal o shiny, ver slot()) - viene
         // de quien llama, YA NO se asume el activo del widget (bug real: evolucionar un shiny
@@ -1378,21 +2241,20 @@ object PetState {
         // decide el llamador, no un flag global.
         val fromSlot = slot(from, shiny)
         val toSlot = slot(to, shiny)
-        val health = p.getFloat(k(fromSlot, KEY_HEALTH), 100f)
-        val hygiene = p.getFloat(k(fromSlot, KEY_HYGIENE), 100f)
-        val happiness = p.getFloat(k(fromSlot, KEY_HAPPINESS), 100f)
-        val xp = p.getFloat(k(fromSlot, KEY_XP), 0f)
+        val health = p.getFloatSafe(k(fromSlot, KEY_HEALTH), 100f)
+        val hygiene = p.getFloatSafe(k(fromSlot, KEY_HYGIENE), 100f)
+        val happiness = p.getFloatSafe(k(fromSlot, KEY_HAPPINESS), 100f)
+        val xp = xpForNewSpecies(context, from, to, p.getFloatSafe(k(fromSlot, KEY_XP), 0f))
         val lastUpdate = p.getLong(k(fromSlot, KEY_LAST), System.currentTimeMillis())
         // Horas de cuidado: MISMO individuo, solo cambia de especie - sigue siendo un unico
         // contador continuo a traves de toda la cadena (pedido explicito del usuario).
-        val careHours = p.getFloat(k(fromSlot, KEY_CARE_HOURS), 0f)
+        val careHours = p.getFloatSafe(k(fromSlot, KEY_CARE_HOURS), 0f)
         // Favorito: NO hace falta copiar nada aqui - se guarda bajo la RAIZ de la cadena (ver
         // isFavorite/setFavorite/favoriteChainKey), que es la misma antes y despues de
         // evolucionar, asi que ya "sigue" a la linea entera sin ningun paso extra.
         val e = p.edit()
-            .putString(KEY_POKEMON, to)
-            .putBoolean(KEY_ACTIVE_SHINY, shiny)
-            .putInt(k(toSlot, KEY_ID), toId)
+        if (!stayInNursery && !stayInDungeon) e.putString(KEY_POKEMON, to).putBoolean(KEY_ACTIVE_SHINY, shiny)
+        e.putInt(k(toSlot, KEY_ID), toId)
             .putFloat(k(toSlot, KEY_HEALTH), health)
             .putFloat(k(toSlot, KEY_HYGIENE), hygiene)
             .putFloat(k(toSlot, KEY_HAPPINESS), happiness)
@@ -1400,6 +2262,12 @@ object PetState {
             .putLong(k(toSlot, KEY_LAST), lastUpdate)
             .putFloat(k(toSlot, KEY_CARE_HOURS), careHours)
             .putBoolean(k(to, KEY_SHINY), shiny)  // flag legacy (comparte con currentPokemon/isActiveShiny)
+            // El individuo que acaba de llegar a [to] esta VIVO como esa especie: si esa misma slot ya
+            // se recorrio antes en otra cadena (la cria de un huevo repite una linea ya completada),
+            // conservaria el "evolucionado" de la vez anterior y la forma nueva no podria evolucionar
+            // ni contaria para el nivel de entrenador.
+            .putBoolean(k(toSlot, KEY_EVOLVED_AWAY), false)
+            .remove(k(toSlot, KEY_EVOLVED_TO))
             .putBoolean(k(fromSlot, KEY_EVOLVED_AWAY), true)
             .putString(k(fromSlot, KEY_EVOLVED_TO), to)
         // Genero: el sexo de un individuo NUNCA cambia al evolucionar. Si [from] ya tenia uno
@@ -1438,8 +2306,24 @@ object PetState {
         if (isFinalStage(context, to)) {
             e.putLong(KEY_EGG_LAST_ROLL, System.currentTimeMillis())
         }
+        if (stayInNursery) {
+            // La plaza pasa a la especie nueva (mismo sitio, mismo huevo a medias); el activo del widget no cambia.
+            val eggState = p.getInt(KEY_NURSERY_EGG_STATE + fromSlot, 0)
+            e.putStringSet(KEY_NURSERY_SET, nurserySlotKeys(context).toSet() - fromSlot + toSlot)
+                .remove(KEY_NURSERY_EGG_STATE + fromSlot)
+                .putInt(KEY_NURSERY_EGG_STATE + toSlot, eggState)
+        }
         e.commit()
         unlock(context, to)
+        if (stayInDungeon) {
+            if (fromInParty) DungeonState.renameMember(context, from, to, shiny)
+            DebugLog.log(context, "mazmorra: $from evoluciona dentro del grupo y sigue como $to${if (shiny) " (shiny)" else ""}")
+        }
+        if (stayInNursery) {
+            markNurseryEvoNotified(context, fromSlot, false)
+            if (nurseryEvoNotified(context).isEmpty()) NotificationHelper.cancelNurseryEvolution(context)   // ya no queda nadie por evolucionar
+            DebugLog.log(context, "guarderia: $from evoluciona dentro y se queda como $to${if (shiny) " (shiny)" else ""}")
+        }
     }
 
     /**
@@ -1486,15 +2370,14 @@ object PetState {
     // usado solo por catchUpStarterGiftIfWaiting para distinguir "todavia esperando el primer
     // regalo de siempre" de "ya en su segundo/tercer/... ciclo normal" (ver ese comentario).
     private const val KEY_OFFER_EVER_RESOLVED = "offer_ever_resolved"
-    // 12h (antes 24h) - pedido explicito del usuario tras hacer cuentas: con 1025 especies y un
-    // regalo (1 eleccion) por ciclo, a 24h hacian falta casi 3 años para desbloquear el roster
-    // entero, sin contar variantes shiny/formas especiales encima. A 12h se reduce a la mitad.
-    private const val OFFER_INTERVAL_HOURS = 12f   // a cuantas horas del inicio del ciclo aparece el regalo
-    // 24h (antes 48h) - correccion del usuario: el margen es EL DOBLE del intervalo (48=2x24
-    // antes), no un margen fijo de 24h independiente del intervalo - con 36h (intervalo+24h fijas)
-    // la proporcion pasaba de 2x a 3x, "no daria para 3 regalos y el juego no esta preparado para
-    // eso". Con 24h (2x12) se mantiene la MISMA proporcion 2x que ya estaba validada.
-    private const val OFFER_GRACE_HOURS = 24f      // limite del ciclo: pasado esto sin abrir, se pierde el turno del siguiente regalo (el doble del intervalo, misma proporcion de siempre)
+    // HORARIO FIJO (pedido del usuario): el regalo aparece a las 9:00 y a las 21:00 de cada dia (ver [OfferSchedule]), no 12 h despues del anterior -
+    // con aquello, quien empezaba por la tarde recibia el segundo por la madrugada. [KEY_OFFER_NEXT_AT] guarda cuando toca el siguiente (epoch ms):
+    // al elegir/descartar el regalo pendiente pasa al primer reparto POSTERIOR a ese momento (abrir tarde no cambia las horas; solo se pierde el
+    // reparto que llego mientras el anterior seguia sin abrir, porque solo cabe un regalo pendiente a la vez).
+    private const val KEY_OFFER_NEXT_AT = "offer_next_at"
+    private const val KEY_OFFER_SLOTS_MIGRATED = "offer_slots_migrated"   // true una vez convertido el ciclo antiguo (ancla + 12 h) al horario fijo
+    private const val OFFER_DUE_NOW = 1L                                   // "ya toca" (un instante muy pasado)
+    private const val OFFER_LEGACY_INTERVAL_MS = 12L * 3_600_000L          // intervalo del ciclo antiguo: solo para convertir partidas ya empezadas
 
     /** [shiny]: este candidato del regalo es la version shiny (sorteado al generar la oferta, ver
      *  maybeGenerateOffer, y guardado con ella: lo que se ve en el dialogo es lo que se obtiene).
@@ -1553,29 +2436,15 @@ object PetState {
         forceNewOffer(context)
     }
 
-    /** Ciclo de regalos (pedido explicitamente asi): el regalo aparece a las OFFER_INTERVAL_HOURS
-     *  (12h) del inicio del ciclo actual; si se abre/descarta antes de OFFER_GRACE_HOURS (24h), el
-     *  ciclo se reinicia AL INSTANTE desde ese momento (ver resolveOffer/dismissOffer) - asi el
-     *  jugador que va abriendo sus regalos a tiempo siempre tiene uno nuevo cada 12h, ni mas ni
-     *  menos. Si NO se abre a tiempo, el ciclo avanza igualmente en bloques de 24h (no se queda
-     *  esperando para siempre) pero el regalo pendiente NO desaparece ni se fuerza - solo se
-     *  pierde el turno del regalo que le habria tocado al siguiente ciclo, porque el hueco (solo
-     *  cabe 1 a la vez) sigue ocupado por el que aun no se ha abierto. Devuelve true solo si de
-     *  verdad ha generado una oferta nueva (para poder notificar). */
+    /** Genera el regalo si ya toca (a las 9:00 y a las 21:00 de la hora local, ver [OfferSchedule]) y no hay otro pendiente. Solo cabe uno
+     *  pendiente a la vez: si el de las 9:00 sigue sin abrirse a las 21:00, el de las 21:00 no aparece (se pierde ese reparto) y el
+     *  pendiente NO desaparece ni se fuerza. Al elegir/descartar, el siguiente llega en el primer reparto posterior a ese momento (ver
+     *  resolveOffer/dismissOffer). Devuelve true solo si de verdad ha generado una oferta nueva (para poder notificar). */
     fun maybeGenerateOffer(context: Context): Boolean {
         val p = prefs(context)
-        val last = p.getLong(KEY_OFFER_LAST, 0L)
         val hasPending = !p.getString(KEY_OFFER_SPECIES, "").isNullOrEmpty()
-        if (hasPending) {
-            if (last != 0L) {
-                val graceMs = (OFFER_GRACE_HOURS * 3_600_000f).toLong()
-                var anchor = last
-                while (System.currentTimeMillis() - anchor >= graceMs) anchor += graceMs
-                if (anchor != last) p.edit().putLong(KEY_OFFER_LAST, anchor).commit()
-            }
-            return false
-        }
-        if (last != 0L && (System.currentTimeMillis() - last) / 3_600_000f < OFFER_INTERVAL_HOURS) return false
+        if (hasPending) return false
+        if (System.currentTimeMillis() < offerNextAt(context)) return false
         val candidates = loadEvoTable(context).entries
             .filter { (name, entry) -> entry.evolvesFrom == null && !isUnlocked(context, name) }
             .map { (name, entry) -> OfferMon(name, entry.id) to (if (entry.rare) WEIGHT_RARE else WEIGHT_NORMAL) }
@@ -1584,26 +2453,14 @@ object PetState {
         val picked = weightedSampleWithoutReplacement(candidates, 5)
             .map { it.copy(shiny = rollShiny(context, it.name)) }
         val csv = encodeOffer(picked)
-        // OJO: KEY_OFFER_LAST NO se toca aqui - sigue anclado al inicio del ciclo (fijado en
-        // resolveOffer/dismissOffer/markStarterChosen), no al momento en que el regalo aparece.
         p.edit().putString(KEY_OFFER_SPECIES, csv).commit()
         return true
     }
 
-    /** Milisegundos que faltan hasta el proximo hito del ciclo: si aun no hay ninguna oferta
-     *  pendiente, tiempo hasta que APAREZCA (marca de 12h desde el inicio del ciclo); si ya
-     *  aparecio y sigue sin abrirse, tiempo que queda de plazo antes de perder el turno del
-     *  siguiente regalo (marca de 24h). Sigue contando siempre (nunca se oculta ni se congela)
-     *  para que el jugador pueda comprobar el mismo que abrir tarde no le penaliza. */
-    fun offerCooldownRemainingMs(context: Context): Long {
-        val p = prefs(context)
-        val last = p.getLong(KEY_OFFER_LAST, 0L)
-        if (last == 0L) return 0L
-        val hasPending = !p.getString(KEY_OFFER_SPECIES, "").isNullOrEmpty()
-        val targetHours = if (hasPending) OFFER_GRACE_HOURS else OFFER_INTERVAL_HOURS
-        val targetMs = (targetHours * 3_600_000f).toLong()
-        return (last + targetMs - System.currentTimeMillis()).coerceAtLeast(0L)
-    }
+    /** Milisegundos que faltan hasta el proximo reparto (9:00 / 21:00) en el que aparecera el regalo; 0 si ya toca (o si hay uno pendiente
+     *  sin abrir). Sigue contando siempre (nunca se oculta ni se congela). */
+    fun offerCooldownRemainingMs(context: Context): Long =
+        (offerNextAt(context) - System.currentTimeMillis()).coerceAtLeast(0L)
 
     /** La oferta pendiente ahora mismo (vacia si no hay ninguna). */
     fun currentOffer(context: Context): List<OfferMon> {
@@ -1642,11 +2499,35 @@ object PetState {
         return sb.toString().trimEnd()
     }
 
-    /** Momento en que aparecio la oferta ACTUAL (ancla de ciclo + 12h) - usado por
-     *  resolveOffer/dismissOffer para no penalizar al jugador que tarda en abrir el regalo. */
-    private fun offerAppearedAt(context: Context): Long {
-        val last = prefs(context).getLong(KEY_OFFER_LAST, 0L)
-        return last + (OFFER_INTERVAL_HOURS * 3_600_000f).toLong()
+    /** Cuando toca el siguiente regalo (epoch ms; un valor ya pasado = "ya toca"). Convierte UNA vez el ciclo antiguo (ancla + 12 h) al
+     *  horario fijo: el siguiente pasa al primer reparto (9:00/21:00) desde esa hora. Un valor muy en el futuro solo puede venir de un movil
+     *  con la hora adelantada y luego corregida (entre dos repartos nunca hay mas de [OfferSchedule.MAX_GAP_MS]): congelaria el regalo todo
+     *  ese tiempo (QaRobust: 30 dias), asi que se recoloca en el proximo reparto desde AHORA. */
+    private fun offerNextAt(context: Context): Long {
+        val p = prefs(context)
+        val now = System.currentTimeMillis()
+        if (!p.getBoolean(KEY_OFFER_SLOTS_MIGRATED, false)) {
+            val last = p.getLong(KEY_OFFER_LAST, 0L)   // formato antiguo: inicio del ciclo
+            val next = when {
+                last <= 0L -> OFFER_DUE_NOW
+                last > now -> OfferSchedule.nextSlotAfter(now)
+                else -> OfferSchedule.firstSlotAtOrAfter(last + OFFER_LEGACY_INTERVAL_MS)
+            }
+            p.edit().putLong(KEY_OFFER_NEXT_AT, next).putBoolean(KEY_OFFER_SLOTS_MIGRATED, true).commit()
+            return next
+        }
+        val next = p.getLong(KEY_OFFER_NEXT_AT, OFFER_DUE_NOW)
+        if (next - now > OfferSchedule.MAX_GAP_MS) {
+            val fixed = OfferSchedule.nextSlotAfter(now)
+            p.edit().putLong(KEY_OFFER_NEXT_AT, fixed).commit()
+            return fixed
+        }
+        return next
+    }
+
+    /** Deja el siguiente regalo para el primer reparto POSTERIOR a ahora (al elegir/descartar el pendiente). */
+    private fun scheduleNextOffer(editor: android.content.SharedPreferences.Editor) {
+        editor.putLong(KEY_OFFER_NEXT_AT, OfferSchedule.nextSlotAfter(System.currentTimeMillis())).putBoolean(KEY_OFFER_SLOTS_MIGRATED, true)
     }
 
     /** Elige [name] de la oferta actual: lo desbloquea Y le crea sus valores iniciales de una vez
@@ -1654,63 +2535,52 @@ object PetState {
      *  que obtienes un Pokemon... se registran sus valores iniciales como si te lo hubieses
      *  puesto", aunque no se ponga de compañero al momento - a diferencia de antes, que solo lo
      *  apuntaba en la Pokedex y no le creaba nada hasta la primera vez que se cuidaba de verdad),
-     *  sin cambiar el Pokemon activo, y limpia la oferta. Reinicia el ciclo desde el momento en
-     *  que ESTE regalo aparecio (no desde ahora): pedido explicitamente asi porque anclar al
-     *  instante de abrir penalizaba tardar en abrirlo (cada retraso se acumulaba para siempre en
-     *  el ciclo siguiente). Con esto, el siguiente regalo siempre llega justo 12h despues de que
-     *  este apareciera, se abra al momento o con retraso (dentro del plazo de gracia) - si
-     *  tardaste 2h en abrirlo, el timer del siguiente ya empieza mostrando 10h en vez de 12h
-     *  completas. */
+     *  sin cambiar el Pokemon activo, y limpia la oferta. El siguiente llega en el primer reparto (9:00 / 21:00) posterior a este momento:
+     *  abrir tarde no mueve las horas. */
     fun resolveOffer(context: Context, name: String, shiny: Boolean = false) {
         val n = name.lowercase()
+        // Solo se puede elegir a alguien de la oferta PENDIENTE: un doble toque en "Elegir" o un
+        // dialogo viejo (la oferta ya se resolvio/descarto/cambio) llegaba aqui otra vez y, sin
+        // esta guarda, regalaba un segundo Pokemon y retrasaba el ciclo otras 12 h (QaConflicts).
+        val pending = currentOffer(context)
+        if (pending.none { it.name == n && it.shiny == shiny }) {
+            DebugLog.log(context, "regalo: resolveOffer($n, shiny=$shiny) ignorado - no esta en la oferta pendiente")
+            return
+        }
         unlock(context, n)
         val id = loadEvoTable(context)[n]?.id
         // [shiny] = el candidato elegido era shiny (ver OfferMon): se crea el individuo shiny.
         if (id != null) rollFreshIndividual(context, n, shiny, id)
-        val anchor = offerAppearedAt(context)
-        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor)
-            .putBoolean(KEY_OFFER_EVER_RESOLVED, true).commit()
+        val editor = prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putBoolean(KEY_OFFER_EVER_RESOLVED, true)
+        scheduleNextOffer(editor)
+        editor.commit()
     }
 
     /** Descarta la oferta actual sin elegir ninguno (si no gustan los 5, esperar a los
-     *  siguientes en vez de dejarla pendiente para siempre). Mismo reinicio de ciclo que en
-     *  resolveOffer: descartar cuenta igual que abrir, el hueco vuelve a quedar libre desde el
-     *  momento en que este regalo aparecio, no desde ahora. */
+     *  siguientes en vez de dejarla pendiente para siempre). Mismo horario que en resolveOffer: el siguiente, en el primer reparto posterior. */
     fun dismissOffer(context: Context) {
-        val anchor = offerAppearedAt(context)
-        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, anchor)
-            .putBoolean(KEY_OFFER_EVER_RESOLVED, true).commit()
+        if (currentOffer(context).isEmpty()) return   // nada que descartar (doble toque): no mover el ciclo
+        val editor = prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putBoolean(KEY_OFFER_EVER_RESOLVED, true)
+        scheduleNextOffer(editor)
+        editor.commit()
     }
 
-    /** Fuerza que aparezca una oferta nueva ahora mismo, sin esperar al ciclo de 12h/24h - en
-     *  origen pedido explicito del usuario tras descartar sin querer un regalo real ("dame un
-     *  regalo que le he dado a descartar sin querer"), y ahora tambien usado por
-     *  [markStarterChosen] para el regalo de bienvenida al elegir inicial. Ancla el ciclo a
-     *  "hace exactamente OFFER_INTERVAL_HOURS" (en vez de a 0L, que es un timestamp de 1970 -
-     *  bug real que causó: al elegir/descartar esta oferta forzada, offerAppearedAt() = 0 + 12h
-     *  leía un ancla corrupta clavada en el pasado, y offerCooldownRemainingMs devolvia 0 para
-     *  siempre - el icono de regalo con el timer desaparecia sin mas, reportado por el usuario:
-     *  "he recogido el regalo y ha desaparecido el icono de regalo con el timer") para que
-     *  [maybeGenerateOffer] genere una de inmediato SIN dejar un ancla sin sentido para el ciclo
-     *  siguiente. Tambien se llama desde el broadcast de debug (ver
+    /** Fuerza que aparezca una oferta nueva ahora mismo, sin esperar al reparto de las 9:00/21:00 - en origen pedido explicito del usuario
+     *  tras descartar sin querer un regalo real, y ahora tambien usado por [markStarterChosen] para el regalo de bienvenida al elegir inicial
+     *  (el siguiente, tras abrirlo, llega en el primer reparto posterior). Tambien se llama desde el broadcast de debug (ver
      *  PokeWidgetProvider.ACTION_DEBUG_FORCE_OFFER). */
     fun forceNewOffer(context: Context) {
-        val fakeLast = System.currentTimeMillis() - (OFFER_INTERVAL_HOURS * 3_600_000f).toLong()
-        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_LAST, fakeLast).commit()
+        prefs(context).edit().putString(KEY_OFFER_SPECIES, "").putLong(KEY_OFFER_NEXT_AT, OFFER_DUE_NOW).putBoolean(KEY_OFFER_SLOTS_MIGRATED, true).commit()
         maybeGenerateOffer(context)
     }
 
-    /** DEBUG: repara un ancla de ciclo corrupta (ver comentario de [forceNewOffer] de arriba) -
-     *  la reinicia desde AHORA MISMO, dando un ciclo completo de OFFER_INTERVAL_HOURS hasta el
-     *  siguiente regalo, exactamente lo que deberia haber pasado al elegir/descartar el regalo
-     *  real si el ancla no hubiera estado ya corrupta. [hoursAgo] (0f por defecto = justo ahora)
-     *  permite fijarla como si el ciclo ya llevara corriendo esas horas - pedido explicito del
-     *  usuario para devolver el timer al valor que tenia antes del incidente completo ("bajamelo a
-     *  22h que es como estaba antes": 24h - 22h = 2h ya transcurridas). Solo se llama desde el
-     *  broadcast de debug (ver PokeWidgetProvider.ACTION_DEBUG_REPAIR_OFFER_ANCHOR). */
+    /** DEBUG: repara el horario del regalo: el siguiente pasa al primer reparto (9:00/21:00) posterior a AHORA. [hoursAgo] ya no se usa (se
+     *  conserva para el broadcast de debug de antes, ver PokeWidgetProvider.ACTION_DEBUG_REPAIR_OFFER_ANCHOR). */
+    @Suppress("UNUSED_PARAMETER")
     fun repairOfferAnchor(context: Context, hoursAgo: Float = 0f) {
-        val anchor = System.currentTimeMillis() - (hoursAgo * 3_600_000f).toLong()
-        prefs(context).edit().putLong(KEY_OFFER_LAST, anchor).commit()
+        val editor = prefs(context).edit()
+        scheduleNextOffer(editor)
+        editor.commit()
     }
 
     // ==================== NOTIFICACIONES (base) ====================
@@ -1830,6 +2700,18 @@ object PetState {
      *  bgMatchMultiplier). */
     private fun rollShiny(context: Context, name: String): Boolean =
         Random.nextFloat() < EGG_SHINY_CHANCE * bgMatchMultiplier(context, name)
+
+    /** Multiplicador de shiny de un huevo de la GUARDERIA (pedido explicito del usuario): si tienes
+     *  DESBLOQUEADO algun fondo que le pegue a algun tipo de [name]/[shiny] (ver BG_FOR_TYPE), se aplica
+     *  solo - x2, igual que el fondo puesto en el widget - aunque ese fondo no sea el que tienes puesto
+     *  ni se vea en ningun sitio; si no, x1. No toca el fondo del widget. */
+    fun nurseryShinyMultiplier(context: Context, name: String, shiny: Boolean): Float {
+        val types = typesOf(context, name, shiny)
+        return if (types.any { t -> BG_FOR_TYPE[t]?.any { bg -> isBgUnlocked(context, bg) } == true }) 2f else 1f
+    }
+
+    private fun rollNurseryShiny(context: Context, name: String, shiny: Boolean): Boolean =
+        Random.nextFloat() < EGG_SHINY_CHANCE * nurseryShinyMultiplier(context, name, shiny)
     const val EGG_CRACK_STAGES = 4          // fases visuales de rotura antes de "listo"
 
     // Bono de xp para el PADRE (no la cria) al eclosionar de verdad el huevo - pedido explicito
@@ -2060,11 +2942,13 @@ object PetState {
         val n = listOf(slot(base, recordedShiny), slot(base, !recordedShiny))
             .firstOrNull { p.contains(k(it, KEY_XP)) } ?: return@synchronized
         val xp = try {
-            p.getFloat(k(n, KEY_XP), 0f)
+            p.getFloatSafe(k(n, KEY_XP), 0f)
         } catch (e: ClassCastException) {
             p.getInt(k(n, KEY_XP), 0).toFloat()
         }
-        p.edit().putFloat(k(n, KEY_XP), xp + EGG_HATCH_XP_BONUS).apply()
+        val (xpNew, xpOver) = capXpAtMaxLevel(context, base, xp, xp + EGG_HATCH_XP_BONUS)
+        p.edit().putFloat(k(n, KEY_XP), xpNew).apply()
+        bankOverflowXp(context, xpOver)
     }
 
     /** Soltar (descartar) el huevo listo: NO se queda nada. Consume el huevo entero - hay que
@@ -2090,6 +2974,9 @@ object PetState {
         // Forma regional (ver REGIONAL_HATCH_VARIANT): ya sorteada al poner el huevo - de aqui en
         // adelante la especie de VERDAD de esta cria es esta (para todo: shiny, nivel, sprite...).
         val base = eggHatchSpecies(context) ?: rawBase
+        // Si ese individuo (especie+shiny) esta ahora explorando una mazmorra no puede pasar a ser el activo (setPokemon lo habria
+        // activado igualmente y quedaba a la vez de explorador y de compañero activo - QaConflicts): el huevo se queda sin abrir.
+        if (DungeonState.isInParty(context, base, shiny)) return null
         val id = evolutionInfo(context, base)?.id ?: -1
         if (rawBase == "tatsugiri") {
             setTatsugiriForm(context, prefs(context).getString(KEY_EGG_TATSUGIRI_FORM, null) ?: rollTatsugiriForm(context))
@@ -2407,14 +3294,29 @@ object PetState {
     fun activeMegaSpriteName(context: Context, name: String): String? {
         val n = name.lowercase()
         val p = prefs(context)
-        val until = p.getLong(k(n, KEY_MEGA_ACTIVE_UNTIL), 0L)
+        val until = megaUntil(p, n)
         if (System.currentTimeMillis() >= until) return null
         return p.getString(k(n, KEY_MEGA_ACTIVE_NAME), null)
     }
 
+    /** Fin de la Megaevolucion/Gigantamax activa de [n] (0 si no hay). Ninguna dura mas de
+     *  MEGA_DURATION_MS: un fin MAS lejano solo sale de un movil con la hora adelantada y luego
+     *  corregida (QaRobust: hasta 399 dias de Mega "activa") - se acorta a la duracion maxima
+     *  desde AHORA para que no se quede activa (y sin poder volver a usarla) todo ese tiempo. */
+    private fun megaUntil(p: android.content.SharedPreferences, n: String): Long {
+        val until = p.getLong(k(n, KEY_MEGA_ACTIVE_UNTIL), 0L)
+        val now = System.currentTimeMillis()
+        if (until - now > MEGA_DURATION_MS) {
+            val fixed = now + MEGA_DURATION_MS
+            p.edit().putLong(k(n, KEY_MEGA_ACTIVE_UNTIL), fixed).apply()
+            return fixed
+        }
+        return until
+    }
+
     /** Milisegundos que quedan de Megaevolucion activa (0 si no hay ninguna). */
     fun megaActiveRemainingMs(context: Context, name: String): Long {
-        val until = prefs(context).getLong(k(name.lowercase(), KEY_MEGA_ACTIVE_UNTIL), 0L)
+        val until = megaUntil(prefs(context), name.lowercase())
         return (until - System.currentTimeMillis()).coerceAtLeast(0L)
     }
 
@@ -2425,11 +3327,13 @@ object PetState {
     fun megaCooldownRemainingMs(context: Context, name: String): Long {
         val n = name.lowercase()
         val p = prefs(context)
+        val now = System.currentTimeMillis()
         val lastUsed = p.getLong(k(n, KEY_MEGA_LAST_USED_AT), 0L)
         if (lastUsed == 0L) return 0L
         val lastOption = p.getString(k(n, KEY_MEGA_ACTIVE_NAME), null) ?: return 0L
-        val readyAt = lastUsed + cooldownMsForMegaOption(lastOption)
-        return (readyAt - System.currentTimeMillis()).coerceAtLeast(0L)
+        // "Ultimo uso" en el futuro (hora del movil movida): se cuenta como si hubiera sido ahora.
+        val readyAt = lastUsed.coerceAtMost(now) + cooldownMsForMegaOption(lastOption)
+        return (readyAt - now).coerceAtLeast(0L)
     }
 
     /** Especie REAL distinta que hace falta tener conseguida para poder activar cada opcion de
@@ -3311,6 +4215,10 @@ object PetState {
         val xpSuffix = ".$KEY_XP"
         val evolvedSuffix = ".$KEY_EVOLVED_AWAY"
         val seenSpecies = HashSet<String>()
+        // Solo cuentan claves de ESPECIES REALES: una clave "<algo>.xp" suelta (restos de un bug
+        // antiguo, otra app, un editor de preferencias) inflaba el nivel de entrenador (QaRobust:
+        // 50 claves fantasma -> pozo 7 a 4982) y con el el acceso a mochila/guarderia/exploradores.
+        val species = loadEvoTable(context)
         var captureCount = 0
         var levelSum = 0
         var evolutionCount = 0
@@ -3331,6 +4239,7 @@ object PetState {
                 val slotName = key.removeSuffix(xpSuffix)
                 val isShinySlot = slotName.endsWith(SHINY_SLOT_SUFFIX)
                 val realSpecies = if (isShinySlot) slotName.removeSuffix(SHINY_SLOT_SUFFIX) else slotName
+                if (realSpecies !in species) continue
                 // captureCount YA NO cuenta las formas evolucionadas-away (ver comentario de
                 // TRAINER_XP_PER_CAPTURE) - mismo filtro que levelSum/shinyCount, para que una
                 // cadena de 3 fases sea UNA captura, no tres.
@@ -3341,7 +4250,7 @@ object PetState {
                     if (isShinySlot) shinyCount++
                 }
             } else if (key.endsWith(evolvedSuffix) && value == true) {
-                evolutionCount++
+                if (key.removeSuffix(evolvedSuffix).removeSuffix(SHINY_SLOT_SUFFIX) in species) evolutionCount++
             }
         }
         return captureCount * TRAINER_XP_PER_CAPTURE +
@@ -3351,6 +4260,40 @@ object PetState {
     }
 
     fun trainerLevel(context: Context): Int = trainerLevelOf(trainerXpPool(context))
+
+    /** SOLO PRUEBAS (ACTION_DEBUG_TRAINER_REPORT): de donde sale el pozo del nivel de entrenador y cuanto hace falta para cada nivel. */
+    fun debugTrainerReport(context: Context): String {
+        val p = prefs(context)
+        var captures = 0; var levelSum = 0; var evolutions = 0; var shinies = 0; var maxed = 0
+        for ((key, value) in p.all) {
+            if (key.endsWith(".$KEY_XP")) {
+                val slotName = key.removeSuffix(".$KEY_XP")
+                val shinySlot = slotName.endsWith(SHINY_SLOT_SUFFIX)
+                val real = if (shinySlot) slotName.removeSuffix(SHINY_SLOT_SUFFIX) else slotName
+                if (real !in loadEvoTable(context)) continue
+                if (!p.getBoolean(k(slotName, KEY_EVOLVED_AWAY), false)) {
+                    captures++
+                    val xp = when (value) { is Float -> value; is Int -> value.toFloat(); else -> 0f }
+                    val lv = levelOf(context, xp, real)
+                    levelSum += lv; if (lv >= 100) maxed++
+                    if (shinySlot) shinies++
+                }
+            } else if (key.endsWith(".$KEY_EVOLVED_AWAY") && value == true) evolutions++
+        }
+        val pool = trainerXpPool(context)
+        val sb = StringBuilder()
+        sb.append("pozo actual %.0f = capturas %d x%.0f + suma de niveles %d x%.1f + evoluciones %d x%.0f + shiny %d x%.0f -> nivel de entrenador %d (maximo guardado %d); Pokemon al 100: %d".format(
+            pool, captures, TRAINER_XP_PER_CAPTURE, levelSum, TRAINER_XP_PER_MON_LEVEL, evolutions, TRAINER_XP_PER_EVOLUTION, shinies, TRAINER_XP_PER_SHINY,
+            trainerLevel(context), trainerLevelMax(context), maxed)).append(System.lineSeparator())
+        sb.append("pozo necesario por nivel: ")
+        for (l in listOf(11, 15, 20, 25, 30, 35, 50, 75, 100)) sb.append("Nv%d=%.0f  ".format(l, cumXpTrainer(l)))
+        sb.append(System.lineSeparator())
+        sb.append("comprobacion de la curva: nivel con pozo 9600=${trainerLevelOf(9600f)}, 9700=${trainerLevelOf(9700f)}, 50000=${trainerLevelOf(50000f)}")
+        // Con lo que ya tienes: si TODOS tus Pokemon actuales estuvieran al 100, ¿llegarias al 100 de entrenador?
+        val ceiling = captures * (TRAINER_XP_PER_CAPTURE + 100 * TRAINER_XP_PER_MON_LEVEL) + evolutions * TRAINER_XP_PER_EVOLUTION + shinies * TRAINER_XP_PER_SHINY
+        sb.append(System.lineSeparator()).append("techo con tu coleccion actual (todos al 100): pozo %.0f -> nivel %d".format(ceiling, trainerLevelOf(ceiling)))
+        return sb.toString()
+    }
 
     /** Progreso (0f..1f) del nivel de entrenador hacia el siguiente - 1f si ya esta al maximo. */
     fun trainerProgress(context: Context): Float {
@@ -3473,8 +4416,86 @@ object PetState {
 
     fun isBgUnlocked(context: Context, bg: String): Boolean = bg in unlockedBackgrounds(context)
 
-    fun bgTokensAvailable(context: Context): Int =
-        (trainerLevel(context) / TRAINER_LEVELS_PER_TOKEN - (unlockedBackgrounds(context).size - 1)).coerceAtLeast(0)
+    // Total de fondos que se pueden desbloquear (uno por tipo, ver BG_FOR_TYPE): las fichas nunca pasan
+    // de los que AUN esten bloqueados - antes, con todos abiertos, desde el nivel 36 seguia saliendo
+    // una ficha disponible (flecha y contador fantasma).
+    private val ALL_BACKGROUNDS: Set<String> = BG_FOR_TYPE.values.flatten().toSet()
+
+    fun trainerLevelsPerToken(): Int = TRAINER_LEVELS_PER_TOKEN
+
+    fun bgTokensAvailable(context: Context): Int {
+        val earned = trainerLevel(context) / TRAINER_LEVELS_PER_TOKEN - (unlockedBackgrounds(context).size - 1)
+        val stillLocked = (ALL_BACKGROUNDS - unlockedBackgrounds(context)).size
+        return earned.coerceAtLeast(0).coerceAtMost(stillLocked)
+    }
+
+    // ==================== NIVEL MAXIMO DE ENTRENADOR + DESBLOQUEOS ====================
+    // El pozo del nivel de entrenador NO es monotono (borrar un individuo lo baja, quedarse un huevo
+    // cuya base ya evoluciono resta, etc.) y se recalcula recorriendo TODAS las preferencias. Las
+    // mecanicas que se desbloquean con el nivel (mochila, guarderia, mas exploradores - ver
+    // UNLOCK_*) usan el MAXIMO ya alcanzado, guardado, para que un peldaño no se vuelva a cerrar.
+    private const val KEY_TRAINER_LEVEL_MAX = "trainer_level_max"
+    private const val KEY_TRAINER_LEVEL_CHECKED_AT = "trainer_level_checked_at"
+    private const val TRAINER_LEVEL_RECHECK_MS = 5 * 60_000L
+
+    /** Nivel de entrenador mas alto alcanzado jamas (lectura barata, sin recalcular). */
+    fun trainerLevelMax(context: Context): Int = prefs(context).getInt(KEY_TRAINER_LEVEL_MAX, 1)
+
+    /** SOLO PARA LAS AUTOCOMPROBACIONES DE ADB: nivel de entrenador maximo guardado tal cual (null si aun no hay). */
+    fun debugRawTrainerLevelMax(context: Context): Int? =
+        prefs(context).takeIf { it.contains(KEY_TRAINER_LEVEL_MAX) }?.getInt(KEY_TRAINER_LEVEL_MAX, 1)
+
+    /** SOLO PARA LAS AUTOCOMPROBACIONES DE ADB: fuerza (o con null, borra) el nivel maximo guardado,
+     *  para probar mecanicas de niveles que el jugador aun no tiene. Hay que restaurarlo despues. */
+    fun debugSetTrainerLevelMax(context: Context, level: Int?) {
+        val e = prefs(context).edit()
+        if (level == null) e.remove(KEY_TRAINER_LEVEL_MAX) else e.putInt(KEY_TRAINER_LEVEL_MAX, level)
+        e.commit()
+    }
+
+    /** Recalcula el nivel actual y sube el maximo guardado si procede. Devuelve el maximo y el
+     *  nivel desde el que se subio (null si no subio, o si es la PRIMERA vez que se calcula - en esa
+     *  primera vez no se avisa de nada: un jugador que ya iba por el nivel 15 no debe ver 14 avisos). */
+    fun noteTrainerLevel(context: Context): Pair<Int, Int?> {
+        val p = prefs(context)
+        val current = trainerLevel(context)
+        val firstTime = !p.contains(KEY_TRAINER_LEVEL_MAX)
+        val stored = p.getInt(KEY_TRAINER_LEVEL_MAX, 1)
+        p.edit().putLong(KEY_TRAINER_LEVEL_CHECKED_AT, System.currentTimeMillis()).apply()
+        if (current > stored || firstTime) {
+            val newMax = maxOf(current, stored)
+            p.edit().putInt(KEY_TRAINER_LEVEL_MAX, newMax).apply()
+            return newMax to (if (firstTime) null else stored)
+        }
+        return stored to null
+    }
+
+    /** Como [trainerLevelMax], pero revisando de vez en cuando (cada 5 min como mucho) si el nivel
+     *  ha subido - para decisiones de desbloqueo fuera de la pantalla principal (guarderia, huevos...). */
+    fun trainerLevelMaxFresh(context: Context): Int {
+        val p = prefs(context)
+        val age = System.currentTimeMillis() - p.getLong(KEY_TRAINER_LEVEL_CHECKED_AT, 0L)
+        return if (!p.contains(KEY_TRAINER_LEVEL_MAX) || age > TRAINER_LEVEL_RECHECK_MS) noteTrainerLevel(context).first
+        else trainerLevelMax(context)
+    }
+
+    // Niveles de entrenador a los que se desbloquea cada mecanica (escalera acordada con el usuario).
+    const val UNLOCK_CANDIES_LEVEL = 4        // mochila y caramelos
+    const val UNLOCK_NURSERY_LEVEL = 6        // guarderia (1.a plaza)
+
+    /** Lo que se desbloquea al llegar a [level] (texto para el aviso de subida de nivel), vacio si nada. */
+    fun unlocksAtTrainerLevel(level: Int): List<String> = buildList {
+        if (level == UNLOCK_CANDIES_LEVEL) add("Mochila y caramelos: soltar un huevo da un caramelo con el que subir a cualquier Pokémon")
+        if (level == ExplorerPartyRules.FIRST_COMPANION_LEVEL) add("Compañero de mazmorra: tu explorador puede llevar a otro Pokémon, y se reparten el XP")
+        if (level == ExplorerPartyRules.SECOND_COMPANION_LEVEL) add("Segundo compañero de mazmorra: el XP se reparte entre tres")
+        if (level == UNLOCK_NURSERY_LEVEL) add("Guardería: un Pokémon dentro gana XP sin que lo cuides")
+        else if (level > UNLOCK_NURSERY_LEVEL && NurseryRules.slotsForTrainerLevel(level) > NurseryRules.slotsForTrainerLevel(level - 1)) {
+            add("Guardería: ya tienes ${NurseryRules.slotsForTrainerLevel(level)} plazas")
+        }
+    }
+
+    /** Descripcion de la ficha de fondos para la UI (antes decia "cada 5 niveles" aunque eran 2). */
+    fun bgTokenLabelEvery(): String = "cada $TRAINER_LEVELS_PER_TOKEN niveles de entrenador"
 
     /** Gasta un token para desbloquear [bg] (si aun no lo estaba y hay token disponible).
      *  Devuelve true si se desbloqueo de verdad. */
